@@ -1,0 +1,19 @@
+tracker:
+  base_url: "https://byr.pt"
+  username: ""
+  password: ""
+  cookie: ""
+
+client:
+  base_url: "http://127.0.0.1:8080"
+  username: ""
+  password: ""
+  save_path: ""
+
+strategy:
+  max_disk_usage_gib: 500
+  refresh_interval: "121s"
+
+runtime:
+  data_dir: "data"
+  log_dir: "logs"
