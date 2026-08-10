@@ -1,2 +1,2 @@
-// Package topfree will coordinate the TopFree torrent lifecycle strategy.
+// Package topfree coordinates periodic TopFree torrent discovery.
 package topfree
