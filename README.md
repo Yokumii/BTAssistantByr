@@ -46,7 +46,7 @@ make check # 依次执行 test、vet、build
 
 - 使用用户名和密码向 BYR `/api/v2/login.php` 登录，获取 API Access Token、`auth_token` 和 `session_id`
 - 可选通过 `tracker.proxy_url` 为 BYR 请求配置 HTTP、HTTPS 或 SOCKS5 代理
-- 使用 Web API 用户名和密码向 qBittorrent `/api/v2/auth/login` 登录并获取 `SID`
+- 使用 Web API 用户名和密码向 qBittorrent `/api/v2/auth/login` 登录，兼容旧版 `SID` 和 v5.2+ `QBT_SID_<端口>` 会话 Cookie
 - 校验已有 `auth_token` 或 `SID`，供后续配置加载和会话复用
 - 对缺少账号密码、无效服务地址、非预期状态码和未返回凭证分别返回显式错误
 
