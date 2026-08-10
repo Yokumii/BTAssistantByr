@@ -2,7 +2,7 @@
 
 BTAssistantByr 是对 [BYRBT_RyukawaChihiro](https://github.com/LetMeFly666/BYRBT_RyukawaChihiro) 的 Go 语言二次开发。
 
-当前仓库已完成工程初始化、架构边界定义、严格配置加载、BYR 和 qBittorrent 登录凭证获取、BYR TopFree 种子发现与定期轮询，以及 BYR 下载 URL 和 qBittorrent 业务适配器。TopFree 下载、标记与空间管理策略尚未实现，暂不可用于实际刷流。
+当前仓库已完成工程初始化、架构边界定义、严格配置加载、BYR 和 qBittorrent 登录凭证获取、BYR TopFree 种子发现与定期轮询、BYR 下载 URL、qBittorrent 业务适配器，以及无副作用的 TopFree 容量规划。真实写入执行器尚未接入，暂不可用于实际刷流。
 
 ## 环境要求
 
@@ -58,6 +58,8 @@ make check # 依次执行 test、vet、build
 - 按指定间隔串行轮询 TopFree 列表，支持上下文取消并显式返回获取和处理错误
 - 查询指定标签的 qBittorrent 种子，并映射 Hash、名称、大小、添加时间、保存路径和标签
 - 支持新增 URL 种子、添加标签、重新汇报、停止和删除操作；停止操作使用 qBittorrent 5.x 的 `/api/v2/torrents/stop`
+- 纯计算 TopFree 标签同步、失效标记、按容量回收、下载优先级和空间不足跳过计划
+- 容量规划只允许回收带 `sc` 标签且已不再 TopFree 的种子，当前 TopFree 和其他来源的 `toDel` 种子不会进入删除计划
 - 对缺少账号密码、无效服务地址、非预期状态码和未返回凭证分别返回显式错误
 
 认证模块不会持久化凭证，也不会把 Cookie 或 SID 写回配置文件。持久化策略将在配置加载功能中单独设计。
@@ -79,7 +81,7 @@ tracker:
 3. BYR TopFree 种子发现与定期轮询（已完成）
 4. BYR 下载 URL 和 qBittorrent 业务适配器（已完成）
 5. 配置加载与校验（已完成）
-6. TopFree 下载、标记与空间管理策略
+6. TopFree 标签、下载与空间管理纯策略规划（已完成；写入执行器未接入）
 7. 端到端测试与部署
 
 ## 许可

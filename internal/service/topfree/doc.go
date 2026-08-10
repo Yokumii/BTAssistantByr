@@ -1,2 +1,2 @@
-// Package topfree coordinates periodic TopFree torrent discovery.
+// Package topfree coordinates periodic discovery and pure TopFree capacity planning.
 package topfree
