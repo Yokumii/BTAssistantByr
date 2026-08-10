@@ -2,7 +2,7 @@
 
 BTAssistantByr 是对 [BYRBT_RyukawaChihiro](https://github.com/LetMeFly666/BYRBT_RyukawaChihiro) 的 Go 语言二次开发。
 
-当前仓库已完成工程初始化、架构边界定义、BYR 和 qBittorrent 登录凭证获取，以及 BYR TopFree 种子发现与定期轮询。配置加载、BYR passkey/种子文件获取、qBittorrent 操作和下载策略尚未实现，暂不可用于实际刷流。
+当前仓库已完成工程初始化、架构边界定义、BYR 和 qBittorrent 登录凭证获取、BYR TopFree 种子发现与定期轮询，以及 BYR 下载 URL 和 qBittorrent 业务适配器。配置加载和 TopFree 下载、标记与空间管理策略尚未实现，暂不可用于实际刷流。
 
 ## 环境要求
 
@@ -51,7 +51,10 @@ make check # 依次执行 test、vet、build
 - 从 BYR 种子列表识别同时处于置顶和 Free/2x Free 状态的 TopFree 种子
 - 解析种子 ID、名称、大小、做种/下载人数和 Free 截止时间，并从详情页获取种子 Hash
 - 在 BYR 客户端会话内缓存 ID 到 Hash 的映射，减少重复详情页请求
+- 从 BYR 用户页面读取并缓存 passkey，按种子 ID 生成 qBittorrent 可用的下载 URL
 - 按指定间隔串行轮询 TopFree 列表，支持上下文取消并显式返回获取和处理错误
+- 查询指定标签的 qBittorrent 种子，并映射 Hash、名称、大小、添加时间、保存路径和标签
+- 支持新增 URL 种子、添加标签、重新汇报、停止和删除操作；停止操作使用 qBittorrent 5.x 的 `/api/v2/torrents/stop`
 - 对缺少账号密码、无效服务地址、非预期状态码和未返回凭证分别返回显式错误
 
 认证模块不会持久化凭证，也不会把 Cookie 或 SID 写回配置文件。持久化策略将在配置加载功能中单独设计。
@@ -71,8 +74,8 @@ tracker:
 1. 工程脚手架与领域边界（已完成）
 2. BYR 与 qBittorrent 登录凭证获取（已完成）
 3. BYR TopFree 种子发现与定期轮询（已完成）
-4. 配置加载与校验
-5. BYR 种子文件和 qBittorrent 业务适配器
+4. BYR 下载 URL 和 qBittorrent 业务适配器（已完成）
+5. 配置加载与校验
 6. TopFree 下载、标记与空间管理策略
 7. 端到端测试与部署
 

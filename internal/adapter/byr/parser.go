@@ -19,6 +19,7 @@ var (
 	freeUntilPattern   = regexp.MustCompile(`\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}`)
 	sizePattern        = regexp.MustCompile(`(?i)^\s*([0-9]+(?:\.[0-9]+)?)\s*(B|KiB|MiB|GiB|TiB)\s*$`)
 	torrentHashPattern = regexp.MustCompile(`(?i)\b[0-9a-f]{40}\b`)
+	passkeyPattern     = regexp.MustCompile(`\b[0-9A-Za-z]{16,64}\b`)
 )
 
 var stickyClasses = map[string]struct{}{
@@ -148,6 +149,28 @@ func parseTorrentHash(reader io.Reader) (domain.TorrentHash, error) {
 	return domain.TorrentHash(strings.ToLower(hash)), nil
 }
 
+func parsePasskey(reader io.Reader) (string, error) {
+	document, err := html.Parse(reader)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrPasskeyNotFound, err)
+	}
+	label := findElement(document, "td", func(node *html.Node) bool {
+		return strings.EqualFold(normalizedText(node), "passkey")
+	})
+	if label == nil {
+		return "", ErrPasskeyNotFound
+	}
+	valueCell := nextElementSibling(label, "td")
+	if valueCell == nil {
+		return "", ErrPasskeyNotFound
+	}
+	passkey := passkeyPattern.FindString(normalizedText(valueCell))
+	if passkey == "" {
+		return "", ErrPasskeyNotFound
+	}
+	return passkey, nil
+}
+
 func isTopFreeRow(row *html.Node) bool {
 	sticky := findElement(row, "div", func(node *html.Node) bool {
 		return hasAnyClass(node, stickyClasses)
@@ -248,6 +271,15 @@ func directChildren(node *html.Node, tag string) []*html.Node {
 		}
 	}
 	return children
+}
+
+func nextElementSibling(node *html.Node, tag string) *html.Node {
+	for sibling := node.NextSibling; sibling != nil; sibling = sibling.NextSibling {
+		if sibling.Type == html.ElementNode && sibling.Data == tag {
+			return sibling
+		}
+	}
+	return nil
 }
 
 func normalizedText(node *html.Node) string {

@@ -7,10 +7,12 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/Yokumii/BTAssistantByr/internal/domain"
+	"github.com/Yokumii/BTAssistantByr/internal/port"
 )
 
 const maxPageSize = 4 << 20
@@ -22,7 +24,13 @@ var (
 	ErrInvalidTorrentPage = errors.New("invalid BYR torrent page")
 	// ErrTorrentHashNotFound indicates that a details page does not contain a torrent hash.
 	ErrTorrentHashNotFound = errors.New("BYR torrent hash not found")
+	// ErrPasskeyNotFound indicates that BYR's user page does not contain a passkey.
+	ErrPasskeyNotFound = errors.New("BYR passkey not found")
+	// ErrInvalidTorrentID indicates that a torrent ID cannot be used in a BYR URL.
+	ErrInvalidTorrentID = errors.New("invalid BYR torrent ID")
 )
+
+var _ port.Tracker = (*Client)(nil)
 
 // Client accesses authenticated BYR tracker pages.
 type Client struct {
@@ -32,6 +40,54 @@ type Client struct {
 
 	hashMu    sync.RWMutex
 	hashCache map[domain.TorrentID]domain.TorrentHash
+
+	passkeyMu sync.RWMutex
+	passkey   string
+}
+
+// DownloadURL returns an authenticated tracker URL without downloading the torrent file.
+func (c *Client) DownloadURL(ctx context.Context, torrentID domain.TorrentID) (string, error) {
+	if !validTorrentID(torrentID) {
+		return "", ErrInvalidTorrentID
+	}
+	passkey, err := c.Passkey(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	endpoint := *c.baseURL
+	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/download.php"
+	endpoint.RawPath = ""
+	endpoint.RawQuery = url.Values{
+		"id":      {string(torrentID)},
+		"passkey": {passkey},
+	}.Encode()
+	return endpoint.String(), nil
+}
+
+// Passkey returns the user's BYR tracker passkey and caches it for this client session.
+func (c *Client) Passkey(ctx context.Context) (string, error) {
+	c.passkeyMu.RLock()
+	passkey := c.passkey
+	c.passkeyMu.RUnlock()
+	if passkey != "" {
+		return passkey, nil
+	}
+
+	response, err := c.get(ctx, "usercp.php", nil)
+	if err != nil {
+		return "", err
+	}
+	defer response.Body.Close()
+
+	passkey, err = parsePasskey(io.LimitReader(response.Body, maxPageSize))
+	if err != nil {
+		return "", err
+	}
+	c.passkeyMu.Lock()
+	c.passkey = passkey
+	c.passkeyMu.Unlock()
+	return passkey, nil
 }
 
 // NewClient creates an authenticated client that shares this authenticator's HTTP settings.
@@ -134,4 +190,13 @@ func (c *Client) get(ctx context.Context, relativePath string, query url.Values)
 	}
 
 	return response, nil
+}
+
+func validTorrentID(torrentID domain.TorrentID) bool {
+	value := strings.TrimSpace(string(torrentID))
+	if value == "" || value != string(torrentID) {
+		return false
+	}
+	_, err := strconv.ParseUint(value, 10, 64)
+	return err == nil
 }

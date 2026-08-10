@@ -105,6 +105,28 @@ func TestParseTorrentHashRequiresLabel(t *testing.T) {
 	}
 }
 
+func TestParsePasskey(t *testing.T) {
+	t.Parallel()
+
+	const passkey = "0123456789abcdef0123456789abcdef"
+	got, err := parsePasskey(strings.NewReader("<table><tr><td>passkey</td><td><span>" + passkey + "</span><button>复制</button></td></tr></table>"))
+	if err != nil {
+		t.Fatalf("parsePasskey() error = %v", err)
+	}
+	if got != passkey {
+		t.Errorf("passkey = %q, want fixture value", got)
+	}
+}
+
+func TestParsePasskeyRequiresValueCell(t *testing.T) {
+	t.Parallel()
+
+	_, err := parsePasskey(strings.NewReader("<table><tr><td>passkey</td></tr></table>"))
+	if !errors.Is(err, ErrPasskeyNotFound) {
+		t.Fatalf("error = %v, want ErrPasskeyNotFound", err)
+	}
+}
+
 func torrentPageFixture(size, seeders, leechers string) string {
 	return `<html><body><table class="torrents coltable full">
 <tr>
