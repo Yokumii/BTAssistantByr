@@ -1,2 +1,2 @@
-// Package byr will implement the BYR tracker port.
+// Package byr implements access to the BYR tracker.
 package byr

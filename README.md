@@ -2,7 +2,7 @@
 
 BTAssistantByr 是对 [BYRBT_RyukawaChihiro](https://github.com/LetMeFly666/BYRBT_RyukawaChihiro) 的 Go 语言二次开发。
 
-当前仓库仅完成工程初始化和架构边界定义，尚未实现登录 BYR、获取种子、控制 qBittorrent 或执行下载策略，暂不可用于实际刷流。
+当前仓库已完成工程初始化、架构边界定义，以及 BYR 和 qBittorrent 登录凭证获取。配置加载、BYR passkey/种子获取、qBittorrent 操作和下载策略尚未实现，暂不可用于实际刷流。
 
 ## 环境要求
 
@@ -42,13 +42,23 @@ make check # 依次执行 test、vet、build
 
 本地配置应由 `config/config.example.yaml` 复制为 `config/config.yaml`。真实配置和运行数据均已加入 `.gitignore`，不要提交账号、密码、Cookie 或 passkey。
 
+## 已实现能力
+
+- 使用用户名和密码向 BYR `takelogin.php` 登录并获取 `auth_token`
+- 使用 Web API 用户名和密码向 qBittorrent `/api/v2/auth/login` 登录并获取 `SID`
+- 校验已有 `auth_token` 或 `SID`，供后续配置加载和会话复用
+- 对缺少账号密码、无效服务地址、非预期状态码和未返回凭证分别返回显式错误
+
+认证模块不会持久化凭证，也不会把 Cookie 或 SID 写回配置文件。持久化策略将在配置加载功能中单独设计。
+
 ## 开发阶段
 
-1. 工程脚手架与领域边界（当前阶段）
-2. 配置加载与校验
-3. BYR 和 qBittorrent 适配器
-4. TopFree 策略编排
-5. 端到端测试与部署
+1. 工程脚手架与领域边界（已完成）
+2. BYR 与 qBittorrent 登录凭证获取（已完成）
+3. 配置加载与校验
+4. BYR 和 qBittorrent 业务适配器
+5. TopFree 策略编排
+6. 端到端测试与部署
 
 ## 许可
 
