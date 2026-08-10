@@ -2,7 +2,7 @@
 
 BTAssistantByr 是对 [BYRBT_RyukawaChihiro](https://github.com/LetMeFly666/BYRBT_RyukawaChihiro) 的 Go 语言二次开发。
 
-当前仓库已完成工程初始化、架构边界定义、BYR 和 qBittorrent 登录凭证获取、BYR TopFree 种子发现与定期轮询，以及 BYR 下载 URL 和 qBittorrent 业务适配器。配置加载和 TopFree 下载、标记与空间管理策略尚未实现，暂不可用于实际刷流。
+当前仓库已完成工程初始化、架构边界定义、严格配置加载、BYR 和 qBittorrent 登录凭证获取、BYR TopFree 种子发现与定期轮询，以及 BYR 下载 URL 和 qBittorrent 业务适配器。TopFree 下载、标记与空间管理策略尚未实现，暂不可用于实际刷流。
 
 ## 环境要求
 
@@ -20,7 +20,7 @@ BTAssistantByr 是对 [BYRBT_RyukawaChihiro](https://github.com/LetMeFly666/BYRB
 │   │   ├── byr               BYR 站点适配器
 │   │   └── qbittorrent       qBittorrent 适配器
 │   ├── app                   依赖装配与程序生命周期
-│   ├── config                配置模型与后续加载入口
+│   ├── config                严格 YAML 加载与配置模型
 │   ├── domain                核心领域模型
 │   ├── port                  外部能力接口
 │   └── service/topfree       TopFree 策略编排
@@ -42,9 +42,12 @@ make check # 依次执行 test、vet、build
 
 本地配置应由 `config/config.example.yaml` 复制为 `config/config.yaml`。真实配置和运行数据均已加入 `.gitignore`，不要提交账号、密码、Cookie 或 passkey。
 
+配置加载不会填充隐式默认值，并且只接受一个不超过 1 MiB 的 YAML 文档。未知字段、缺少必填项、非法 URL、非正数容量或无法解析的轮询间隔都会让启动显式失败。`strategy.max_disk_usage_gib` 使用 GiB，`strategy.refresh_interval` 使用 Go duration 格式，例如 `121s` 或 `2m`；`tracker.proxy_url`、`tracker.cookie` 和 `client.save_path` 可以留空。
+
 ## 已实现能力
 
 - 使用用户名和密码向 BYR `/api/v2/login.php` 登录，获取 API Access Token、`auth_token` 和 `session_id`
+- 严格加载并校验 `config/config.yaml`，完成 GiB 到字节和轮询间隔转换
 - 可选通过 `tracker.proxy_url` 为 BYR 请求配置 HTTP、HTTPS 或 SOCKS5 代理
 - 使用 Web API 用户名和密码向 qBittorrent `/api/v2/auth/login` 登录，兼容旧版 `SID` 和 v5.2+ `QBT_SID_<端口>` 会话 Cookie
 - 校验已有 `auth_token` 或 `SID`，供后续配置加载和会话复用
@@ -75,7 +78,7 @@ tracker:
 2. BYR 与 qBittorrent 登录凭证获取（已完成）
 3. BYR TopFree 种子发现与定期轮询（已完成）
 4. BYR 下载 URL 和 qBittorrent 业务适配器（已完成）
-5. 配置加载与校验
+5. 配置加载与校验（已完成）
 6. TopFree 下载、标记与空间管理策略
 7. 端到端测试与部署
 

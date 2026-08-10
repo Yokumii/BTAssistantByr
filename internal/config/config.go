@@ -1,4 +1,4 @@
-// Package config defines application configuration independent of its file format.
+// Package config defines and loads validated application configuration.
 package config
 
 import "time"
