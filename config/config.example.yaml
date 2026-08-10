@@ -1,5 +1,6 @@
 tracker:
   base_url: "https://byr.pt"
+  proxy_url: ""
   username: ""
   password: ""
   cookie: ""

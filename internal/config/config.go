@@ -14,6 +14,7 @@ type Config struct {
 // Tracker contains BYR connection settings.
 type Tracker struct {
 	BaseURL  string
+	ProxyURL string
 	Username string
 	Password string
 	Cookie   string
