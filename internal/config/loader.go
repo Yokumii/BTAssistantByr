@@ -56,6 +56,7 @@ type yamlClient struct {
 
 type yamlStrategy struct {
 	MaxDiskUsageGiB int64  `yaml:"max_disk_usage_gib"`
+	MinFreeSpaceGiB int64  `yaml:"min_free_space_gib"`
 	RefreshInterval string `yaml:"refresh_interval"`
 }
 
@@ -159,6 +160,12 @@ func validate(raw yamlConfig) (Config, error) {
 	if raw.Strategy.MaxDiskUsageGiB > math.MaxInt64/gib {
 		return Config{}, fieldError("strategy.max_disk_usage_gib", "overflows bytes")
 	}
+	if raw.Strategy.MinFreeSpaceGiB <= 0 {
+		return Config{}, fieldError("strategy.min_free_space_gib", "must be positive")
+	}
+	if raw.Strategy.MinFreeSpaceGiB > math.MaxInt64/gib {
+		return Config{}, fieldError("strategy.min_free_space_gib", "overflows bytes")
+	}
 	refreshInterval, err := time.ParseDuration(raw.Strategy.RefreshInterval)
 	if err != nil || refreshInterval <= 0 {
 		return Config{}, fieldError("strategy.refresh_interval", "must be a positive Go duration")
@@ -190,6 +197,7 @@ func validate(raw yamlConfig) (Config, error) {
 		},
 		Strategy: Strategy{
 			MaxDiskUsageBytes: raw.Strategy.MaxDiskUsageGiB * gib,
+			MinFreeSpaceBytes: raw.Strategy.MinFreeSpaceGiB * gib,
 			RefreshInterval:   refreshInterval,
 		},
 		Execution: Execution{Mode: executionMode},

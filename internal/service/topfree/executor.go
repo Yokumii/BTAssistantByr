@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/url"
 	"strings"
 
@@ -21,6 +22,8 @@ var (
 	ErrInvalidPlan = errors.New("invalid TopFree execution plan")
 	// ErrInvalidDownloadURL indicates that BYR returned an unusable torrent URL.
 	ErrInvalidDownloadURL = errors.New("invalid TopFree download URL")
+	// ErrInsufficientDiskSpace prevents download writes that would consume the reserve.
+	ErrInsufficientDiskSpace = errors.New("insufficient qBittorrent disk space")
 )
 
 // DownloadURLSource resolves a tracker torrent ID without downloading it locally.
@@ -30,6 +33,7 @@ type DownloadURLSource interface {
 
 // MutationClient contains only the qBittorrent writes required by plan execution.
 type MutationClient interface {
+	FreeSpace(context.Context, string) (domain.DiskSpace, error)
 	AddTags(context.Context, []domain.TorrentHash, []string) error
 	RemoveTags(context.Context, []domain.TorrentHash, []string) error
 	Add(context.Context, port.AddTorrentRequest) error
@@ -40,10 +44,11 @@ type MutationClient interface {
 
 // Executor applies a previously computed Plan. It is not started automatically.
 type Executor struct {
-	source   DownloadURLSource
-	client   MutationClient
-	savePath string
-	logger   *slog.Logger
+	source            DownloadURLSource
+	client            MutationClient
+	savePath          string
+	minFreeSpaceBytes int64
+	logger            *slog.Logger
 }
 
 // SetLogger enables detailed execution logs. It must be called before Execute.
@@ -52,17 +57,21 @@ func (e *Executor) SetLogger(logger *slog.Logger) {
 }
 
 // NewExecutor creates an explicit TopFree plan executor.
-func NewExecutor(source DownloadURLSource, client MutationClient, savePath string) (*Executor, error) {
+func NewExecutor(source DownloadURLSource, client MutationClient, savePath string, minFreeSpaceBytes int64) (*Executor, error) {
 	if source == nil {
 		return nil, ErrDownloadSourceRequired
 	}
 	if client == nil {
 		return nil, ErrMutationClientRequired
 	}
+	if minFreeSpaceBytes <= 0 {
+		return nil, ErrInvalidFreeSpaceReserve
+	}
 	return &Executor{
-		source:   source,
-		client:   client,
-		savePath: strings.TrimSpace(savePath),
+		source:            source,
+		client:            client,
+		savePath:          strings.TrimSpace(savePath),
+		minFreeSpaceBytes: minFreeSpaceBytes,
 	}, nil
 }
 
@@ -91,6 +100,9 @@ func (e *Executor) Execute(ctx context.Context, plan Plan) error {
 	if err := e.preflightDownloads(ctx, prepared.downloads); err != nil {
 		return err
 	}
+	if err := e.verifyDiskSpaceBeforeWrites(ctx, prepared); err != nil {
+		return err
+	}
 
 	if err := e.addTags(ctx, prepared.tagAsManaged, ManagedTag, "tag current TopFree torrents as managed"); err != nil {
 		return err
@@ -102,8 +114,14 @@ func (e *Executor) Execute(ctx context.Context, plan Plan) error {
 		return err
 	}
 
+	if err := e.cleanupDownloads(ctx, prepared.downloads); err != nil {
+		return err
+	}
+	if err := e.verifyDiskSpaceAfterCleanup(ctx, prepared); err != nil {
+		return err
+	}
 	for _, download := range prepared.downloads {
-		if err := e.executeDownload(ctx, download); err != nil {
+		if err := e.addDownload(ctx, download); err != nil {
 			return err
 		}
 	}
@@ -122,6 +140,8 @@ type preparedExecutionPlan struct {
 	unmarkForDeletion []domain.TorrentHash
 	markForDeletion   []domain.TorrentHash
 	downloads         []preparedDownload
+	effectiveSavePath string
+	minFreeSpaceBytes int64
 }
 
 type preparedDownload struct {
@@ -187,6 +207,8 @@ func prepareExecutionPlan(plan Plan) (*preparedExecutionPlan, error) {
 		unmarkForDeletion: unmarkForDeletion,
 		markForDeletion:   markForDeletion,
 		downloads:         make([]preparedDownload, len(normalizedCandidates)),
+		effectiveSavePath: strings.TrimSpace(plan.EffectiveSavePath),
+		minFreeSpaceBytes: plan.MinFreeSpaceBytes,
 	}
 	deletionIndex := 0
 	for index, candidate := range normalizedCandidates {
@@ -289,40 +311,122 @@ func (e *Executor) removeTags(ctx context.Context, hashes []domain.TorrentHash, 
 	return nil
 }
 
-func (e *Executor) executeDownload(ctx context.Context, download preparedDownload) error {
-	hashes := make([]domain.TorrentHash, len(download.deleteBefore))
-	for index, torrent := range download.deleteBefore {
-		hashes[index] = torrent.Hash
+func (e *Executor) verifyDiskSpaceBeforeWrites(ctx context.Context, plan *preparedExecutionPlan) error {
+	if len(plan.downloads) == 0 {
+		return nil
+	}
+	space, err := e.client.FreeSpace(ctx, e.savePath)
+	if err != nil {
+		return fmt.Errorf("check qBittorrent free space before writes: %w", err)
+	}
+	if err := validateDiskSpace(space); err != nil {
+		return err
+	}
+	if planSpacePath := strings.TrimSpace(plan.effectiveSavePath); planSpacePath != "" && !sameDiskPath(planSpacePath, space.Path) {
+		return fmt.Errorf("%w: planned save path %q changed to %q", ErrInvalidPlan, planSpacePath, space.Path)
+	}
+	if plan.minFreeSpaceBytes != 0 && plan.minFreeSpaceBytes != e.minFreeSpaceBytes {
+		return fmt.Errorf("%w: planned free-space reserve %d changed to %d", ErrInvalidPlan, plan.minFreeSpaceBytes, e.minFreeSpaceBytes)
+	}
+	required, err := requiredDownloadSpace(plan.downloads, e.minFreeSpaceBytes)
+	if err != nil {
+		return err
+	}
+	projectedFree := space.FreeBytes
+	for _, download := range plan.downloads {
+		for _, torrent := range download.deleteBefore {
+			if sameDiskPath(torrent.SavePath, space.Path) {
+				projectedFree = saturatingAdd(projectedFree, torrent.CompletedBytes)
+			}
+		}
+	}
+	if e.logger != nil {
+		e.logger.DebugContext(ctx, "qBittorrent disk space checked before writes",
+			"save_path", space.Path,
+			"free_bytes", space.FreeBytes,
+			"projected_free_after_cleanup_bytes", projectedFree,
+			"required_bytes", required,
+			"reserve_bytes", e.minFreeSpaceBytes,
+		)
+	}
+	if projectedFree < required {
+		return diskSpaceError(space.Path, projectedFree, required, e.minFreeSpaceBytes)
+	}
+	return nil
+}
+
+func (e *Executor) cleanupDownloads(ctx context.Context, downloads []preparedDownload) error {
+	var hashes []domain.TorrentHash
+	for _, download := range downloads {
+		for _, torrent := range download.deleteBefore {
+			hashes = append(hashes, torrent.Hash)
+		}
 	}
 	if len(hashes) > 0 {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if e.logger != nil {
-			e.logger.DebugContext(ctx, "reannouncing cleanup torrents", "hashes", hashes, "before_torrent_id", download.candidate.ID)
+			e.logger.DebugContext(ctx, "reannouncing cleanup torrents", "hashes", hashes)
 		}
 		if err := e.client.Reannounce(ctx, hashes); err != nil {
-			return fmt.Errorf("reannounce cleanup torrents before adding %s: %w", download.candidate.ID, err)
+			return fmt.Errorf("reannounce cleanup torrents: %w", err)
 		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if e.logger != nil {
-			e.logger.DebugContext(ctx, "stopping cleanup torrents", "hashes", hashes, "before_torrent_id", download.candidate.ID)
+			e.logger.DebugContext(ctx, "stopping cleanup torrents", "hashes", hashes)
 		}
 		if err := e.client.Pause(ctx, hashes); err != nil {
-			return fmt.Errorf("stop cleanup torrents before adding %s: %w", download.candidate.ID, err)
+			return fmt.Errorf("stop cleanup torrents: %w", err)
 		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if e.logger != nil {
-			e.logger.DebugContext(ctx, "deleting cleanup torrents", "hashes", hashes, "delete_files", true, "before_torrent_id", download.candidate.ID)
+			e.logger.DebugContext(ctx, "deleting cleanup torrents", "hashes", hashes, "delete_files", true)
 		}
 		if err := e.client.Delete(ctx, hashes, true); err != nil {
-			return fmt.Errorf("delete cleanup torrents before adding %s: %w", download.candidate.ID, err)
+			return fmt.Errorf("delete cleanup torrents: %w", err)
 		}
 	}
+	return nil
+}
+
+func (e *Executor) verifyDiskSpaceAfterCleanup(ctx context.Context, plan *preparedExecutionPlan) error {
+	if len(plan.downloads) == 0 {
+		return nil
+	}
+	space, err := e.client.FreeSpace(ctx, e.savePath)
+	if err != nil {
+		return fmt.Errorf("check qBittorrent free space after cleanup: %w", err)
+	}
+	if err := validateDiskSpace(space); err != nil {
+		return err
+	}
+	if planSpacePath := strings.TrimSpace(plan.effectiveSavePath); planSpacePath != "" && !sameDiskPath(planSpacePath, space.Path) {
+		return fmt.Errorf("%w: save path changed from %q to %q after cleanup", ErrInvalidPlan, planSpacePath, space.Path)
+	}
+	required, err := requiredDownloadSpace(plan.downloads, e.minFreeSpaceBytes)
+	if err != nil {
+		return err
+	}
+	if e.logger != nil {
+		e.logger.InfoContext(ctx, "qBittorrent disk space verified after cleanup",
+			"save_path", space.Path,
+			"free_bytes", space.FreeBytes,
+			"required_bytes", required,
+			"reserve_bytes", e.minFreeSpaceBytes,
+		)
+	}
+	if space.FreeBytes < required {
+		return diskSpaceError(space.Path, space.FreeBytes, required, e.minFreeSpaceBytes)
+	}
+	return nil
+}
+
+func (e *Executor) addDownload(ctx context.Context, download preparedDownload) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -335,6 +439,28 @@ func (e *Executor) executeDownload(ctx context.Context, download preparedDownloa
 		Tags:      []string{ManagedTag},
 	}); err != nil {
 		return fmt.Errorf("add TopFree torrent %s: %w", download.candidate.ID, err)
+	}
+	return nil
+}
+
+func requiredDownloadSpace(downloads []preparedDownload, reserveBytes int64) (int64, error) {
+	required := reserveBytes
+	for _, download := range downloads {
+		if download.candidate.SizeBytes > math.MaxInt64-required {
+			return 0, fmt.Errorf("%w: download sizes and reserve overflow int64", ErrInvalidPlan)
+		}
+		required += download.candidate.SizeBytes
+	}
+	return required, nil
+}
+
+func diskSpaceError(path string, available, required, reserve int64) error {
+	return fmt.Errorf("%w at %q: available=%d required=%d reserve=%d", ErrInsufficientDiskSpace, path, available, required, reserve)
+}
+
+func validateDiskSpace(space domain.DiskSpace) error {
+	if strings.TrimSpace(space.Path) == "" || space.FreeBytes < 0 {
+		return fmt.Errorf("%w: path=%q free_bytes=%d", ErrInvalidDiskSpace, space.Path, space.FreeBytes)
 	}
 	return nil
 }

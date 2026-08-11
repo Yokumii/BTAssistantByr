@@ -169,6 +169,85 @@ func TestBuildPlanDoesNotConsumeCleanupForSkippedCandidate(t *testing.T) {
 	}
 }
 
+func TestBuildPlanWithDiskSpacePlansPhysicalCleanup(t *testing.T) {
+	t.Parallel()
+
+	stale := managedTorrent(9, 30, 1, ManagedTag)
+	stale.SavePath = "/downloads"
+	plan, err := BuildPlanWithDiskSpace(
+		1000,
+		domain.DiskSpace{Path: "/downloads", FreeBytes: 30},
+		10,
+		[]domain.Candidate{candidate(1, 40, 1, 1)},
+		[]domain.ManagedTorrent{stale},
+	)
+	if err != nil {
+		t.Fatalf("BuildPlanWithDiskSpace() error = %v", err)
+	}
+	if len(plan.Downloads) != 1 || len(plan.Downloads[0].DeleteBefore) != 1 || plan.Downloads[0].DeleteBefore[0].Hash != stale.Hash {
+		t.Fatalf("Downloads = %+v", plan.Downloads)
+	}
+	if plan.EffectiveSavePath != "/downloads" || plan.InitialFreeSpaceBytes != 30 || plan.ProjectedFreeSpaceBytes != 20 || plan.MinFreeSpaceBytes != 10 {
+		t.Errorf("disk space projection = %+v", plan)
+	}
+}
+
+func TestBuildPlanWithDiskSpaceDoesNotCountOtherPathCleanup(t *testing.T) {
+	t.Parallel()
+
+	stale := managedTorrent(9, 100, 1, ManagedTag)
+	stale.SavePath = "/other-disk"
+	plan, err := BuildPlanWithDiskSpace(
+		1000,
+		domain.DiskSpace{Path: "/downloads", FreeBytes: 30},
+		10,
+		[]domain.Candidate{candidate(1, 40, 1, 1)},
+		[]domain.ManagedTorrent{stale},
+	)
+	if err != nil {
+		t.Fatalf("BuildPlanWithDiskSpace() error = %v", err)
+	}
+	if len(plan.Downloads) != 0 || len(plan.Skipped) != 1 {
+		t.Fatalf("unexpected physical capacity decision: %+v", plan)
+	}
+	if plan.Skipped[0].AvailableBytes != 20 || len(plan.MarkForDeletion) != 1 {
+		t.Errorf("unexpected skipped decision: %+v", plan)
+	}
+}
+
+func TestBuildPlanWithDiskSpaceCountsOnlyDownloadedBytesAsReleasable(t *testing.T) {
+	t.Parallel()
+
+	stale := managedTorrent(9, 100, 1, ManagedTag)
+	stale.CompletedBytes = 10
+	stale.SavePath = "/downloads"
+	plan, err := BuildPlanWithDiskSpace(
+		1000,
+		domain.DiskSpace{Path: "/downloads", FreeBytes: 30},
+		10,
+		[]domain.Candidate{candidate(1, 40, 1, 1)},
+		[]domain.ManagedTorrent{stale},
+	)
+	if err != nil {
+		t.Fatalf("BuildPlanWithDiskSpace() error = %v", err)
+	}
+	if len(plan.Downloads) != 0 || len(plan.Skipped) != 1 || plan.Skipped[0].AvailableBytes != 30 {
+		t.Fatalf("partial cleanup was overestimated: %+v", plan)
+	}
+}
+
+func TestBuildPlanWithDiskSpaceValidatesCapacity(t *testing.T) {
+	t.Parallel()
+
+	validSpace := domain.DiskSpace{Path: "/downloads", FreeBytes: 100}
+	if _, err := BuildPlanWithDiskSpace(100, domain.DiskSpace{}, 10, nil, nil); !errors.Is(err, ErrInvalidDiskSpace) {
+		t.Errorf("invalid disk space error = %v", err)
+	}
+	if _, err := BuildPlanWithDiskSpace(100, validSpace, 0, nil, nil); !errors.Is(err, ErrInvalidFreeSpaceReserve) {
+		t.Errorf("invalid reserve error = %v", err)
+	}
+}
+
 func TestBuildPlanIsDeterministic(t *testing.T) {
 	t.Parallel()
 
@@ -280,11 +359,12 @@ func candidate(number int, size int64, seeders, leechers int) domain.Candidate {
 
 func managedTorrent(number int, size int64, addedHours int, tags ...string) domain.ManagedTorrent {
 	return domain.ManagedTorrent{
-		Hash:      torrentHash(number),
-		Name:      fmt.Sprintf("managed-%d", number),
-		SizeBytes: size,
-		AddedAt:   fixtureTime.Add(time.Duration(addedHours) * time.Hour),
-		Tags:      append([]string(nil), tags...),
+		Hash:           torrentHash(number),
+		Name:           fmt.Sprintf("managed-%d", number),
+		SizeBytes:      size,
+		CompletedBytes: size,
+		AddedAt:        fixtureTime.Add(time.Duration(addedHours) * time.Hour),
+		Tags:           append([]string(nil), tags...),
 	}
 }
 

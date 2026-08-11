@@ -32,6 +32,10 @@ var (
 	ErrDuplicateManagedTorrent = errors.New("duplicate managed torrent")
 	// ErrDiskUsageOverflow indicates that managed torrent sizes cannot fit in int64.
 	ErrDiskUsageOverflow = errors.New("TopFree disk usage overflows int64")
+	// ErrInvalidDiskSpace indicates that qBittorrent returned unusable path capacity data.
+	ErrInvalidDiskSpace = errors.New("invalid qBittorrent disk space")
+	// ErrInvalidFreeSpaceReserve indicates that no positive physical safety reserve was configured.
+	ErrInvalidFreeSpaceReserve = errors.New("TopFree free space reserve must be positive")
 )
 
 var planHashPattern = regexp.MustCompile(`(?i)^[0-9a-f]{40}(?:[0-9a-f]{24})?$`)
@@ -66,11 +70,53 @@ type Plan struct {
 	Skipped                 []SkippedCandidate
 	CurrentDiskUsageBytes   int64
 	ProjectedDiskUsageBytes int64
+	EffectiveSavePath       string
+	InitialFreeSpaceBytes   int64
+	ProjectedFreeSpaceBytes int64
+	MinFreeSpaceBytes       int64
 }
 
 // BuildPlan computes TopFree tag, cleanup, and download decisions without calling external systems.
 func BuildPlan(
 	maxDiskUsageBytes int64,
+	candidates []domain.Candidate,
+	managed []domain.ManagedTorrent,
+) (Plan, error) {
+	return buildPlan(maxDiskUsageBytes, nil, candidates, managed)
+}
+
+// BuildPlanWithDiskSpace additionally constrains decisions using free bytes
+// measured by qBittorrent at the effective download path.
+func BuildPlanWithDiskSpace(
+	maxDiskUsageBytes int64,
+	diskSpace domain.DiskSpace,
+	minFreeSpaceBytes int64,
+	candidates []domain.Candidate,
+	managed []domain.ManagedTorrent,
+) (Plan, error) {
+	diskSpace.Path = strings.TrimSpace(diskSpace.Path)
+	if diskSpace.Path == "" || diskSpace.FreeBytes < 0 {
+		return Plan{}, ErrInvalidDiskSpace
+	}
+	if minFreeSpaceBytes <= 0 {
+		return Plan{}, ErrInvalidFreeSpaceReserve
+	}
+	return buildPlan(maxDiskUsageBytes, &diskCapacity{
+		path:      diskSpace.Path,
+		freeBytes: diskSpace.FreeBytes,
+		reserve:   minFreeSpaceBytes,
+	}, candidates, managed)
+}
+
+type diskCapacity struct {
+	path      string
+	freeBytes int64
+	reserve   int64
+}
+
+func buildPlan(
+	maxDiskUsageBytes int64,
+	disk *diskCapacity,
 	candidates []domain.Candidate,
 	managed []domain.ManagedTorrent,
 ) (Plan, error) {
@@ -97,6 +143,13 @@ func BuildPlan(
 	}
 
 	plan := Plan{}
+	physicalFreeBytes := int64(math.MaxInt64)
+	if disk != nil {
+		plan.EffectiveSavePath = disk.path
+		plan.InitialFreeSpaceBytes = disk.freeBytes
+		plan.MinFreeSpaceBytes = disk.reserve
+		physicalFreeBytes = disk.freeBytes
+	}
 	stale := make([]domain.ManagedTorrent, 0)
 	alreadyDeleteTagged := make(map[domain.TorrentHash]bool)
 	for _, torrent := range normalizedManaged {
@@ -143,28 +196,33 @@ func BuildPlan(
 	remainingStale := stale
 	deleted := make(map[domain.TorrentHash]struct{})
 	for _, candidate := range newCandidates {
-		reclaimable := sumManagedSizes(remainingStale)
-		required, fits := requiredCleanup(maxDiskUsageBytes, usage, candidate.SizeBytes, reclaimable)
+		deleteCount, freed, physicalFreed, fits := cleanupPrefix(
+			maxDiskUsageBytes,
+			usage,
+			candidate.SizeBytes,
+			physicalFreeBytes,
+			remainingStale,
+			disk,
+		)
 		if !fits {
 			plan.Skipped = append(plan.Skipped, SkippedCandidate{
 				Candidate:      candidate,
 				Reason:         SkipInsufficientSpace,
-				AvailableBytes: availableAfterCleanup(maxDiskUsageBytes, usage, reclaimable),
+				AvailableBytes: availableAfterAllCleanup(maxDiskUsageBytes, usage, physicalFreeBytes, remainingStale, disk),
 			})
 			continue
 		}
 
 		download := DownloadPlan{Candidate: candidate}
-		freed := int64(0)
-		deleteCount := 0
-		for deleteCount < len(remainingStale) && freed < required {
-			freed += remainingStale[deleteCount].SizeBytes
-			download.DeleteBefore = append(download.DeleteBefore, remainingStale[deleteCount])
-			deleted[remainingStale[deleteCount].Hash] = struct{}{}
-			deleteCount++
+		for index := 0; index < deleteCount; index++ {
+			download.DeleteBefore = append(download.DeleteBefore, remainingStale[index])
+			deleted[remainingStale[index].Hash] = struct{}{}
 		}
 		remainingStale = remainingStale[deleteCount:]
 		usage = usage - freed + candidate.SizeBytes
+		if disk != nil {
+			physicalFreeBytes = saturatingAdd(physicalFreeBytes, physicalFreed) - candidate.SizeBytes
+		}
 		plan.Downloads = append(plan.Downloads, download)
 	}
 
@@ -178,6 +236,9 @@ func BuildPlan(
 	sortHashes(plan.UnmarkForDeletion)
 	sortHashes(plan.MarkForDeletion)
 	plan.ProjectedDiskUsageBytes = usage
+	if disk != nil {
+		plan.ProjectedFreeSpaceBytes = physicalFreeBytes
+	}
 	return plan, nil
 }
 
@@ -211,7 +272,8 @@ func normalizeManaged(managed []domain.ManagedTorrent) ([]domain.ManagedTorrent,
 	for index, torrent := range managed {
 		torrent.Hash = canonicalHash(torrent.Hash)
 		torrent.Name = strings.TrimSpace(torrent.Name)
-		if !planHashPattern.MatchString(string(torrent.Hash)) || torrent.Name == "" || torrent.SizeBytes < 0 || torrent.AddedAt.IsZero() {
+		torrent.SavePath = strings.TrimSpace(torrent.SavePath)
+		if !planHashPattern.MatchString(string(torrent.Hash)) || torrent.Name == "" || torrent.SizeBytes < 0 || torrent.CompletedBytes < 0 || torrent.CompletedBytes > torrent.SizeBytes || torrent.AddedAt.IsZero() {
 			return nil, fmt.Errorf("%w at index %d", ErrInvalidManagedTorrent, index)
 		}
 		if _, exists := hashes[torrent.Hash]; exists {
@@ -247,24 +309,83 @@ func sortCandidates(candidates []domain.Candidate) {
 	})
 }
 
-func requiredCleanup(maximum, usage, candidateSize, reclaimable int64) (int64, bool) {
-	if candidateSize > maximum {
-		return 0, false
-	}
-	targetUsage := maximum - candidateSize
-	if usage <= targetUsage {
-		return 0, true
-	}
-	required := usage - targetUsage
-	return required, reclaimable >= required
-}
-
 func availableAfterCleanup(maximum, usage, reclaimable int64) int64 {
 	minimumUsage := usage - reclaimable
 	if minimumUsage >= maximum {
 		return 0
 	}
 	return maximum - minimumUsage
+}
+
+func cleanupPrefix(
+	maximum int64,
+	usage int64,
+	candidateSize int64,
+	physicalFreeBytes int64,
+	stale []domain.ManagedTorrent,
+	disk *diskCapacity,
+) (deleteCount int, freed int64, physicalFreed int64, fits bool) {
+	for {
+		logicalUsage := usage - freed
+		logicalFits := candidateSize <= maximum && logicalUsage <= maximum-candidateSize
+		physicalFits := disk == nil || hasReservedCapacity(saturatingAdd(physicalFreeBytes, physicalFreed), disk.reserve, candidateSize)
+		if logicalFits && physicalFits {
+			return deleteCount, freed, physicalFreed, true
+		}
+		if deleteCount == len(stale) {
+			return 0, 0, 0, false
+		}
+		torrent := stale[deleteCount]
+		freed += torrent.SizeBytes
+		if disk != nil && sameDiskPath(torrent.SavePath, disk.path) {
+			physicalFreed += torrent.CompletedBytes
+		}
+		deleteCount++
+	}
+}
+
+func availableAfterAllCleanup(maximum, usage, physicalFreeBytes int64, stale []domain.ManagedTorrent, disk *diskCapacity) int64 {
+	logical := availableAfterCleanup(maximum, usage, sumManagedSizes(stale))
+	if disk == nil {
+		return logical
+	}
+	physical := physicalFreeBytes
+	for _, torrent := range stale {
+		if sameDiskPath(torrent.SavePath, disk.path) {
+			physical = saturatingAdd(physical, torrent.CompletedBytes)
+		}
+	}
+	if physical <= disk.reserve {
+		physical = 0
+	} else {
+		physical -= disk.reserve
+	}
+	if physical < logical {
+		return physical
+	}
+	return logical
+}
+
+func hasReservedCapacity(freeBytes, reserveBytes, requiredBytes int64) bool {
+	return freeBytes >= reserveBytes && requiredBytes <= freeBytes-reserveBytes
+}
+
+func saturatingAdd(first, second int64) int64 {
+	if second > math.MaxInt64-first {
+		return math.MaxInt64
+	}
+	return first + second
+}
+
+func sameDiskPath(first, second string) bool {
+	normalize := func(value string) string {
+		value = strings.ReplaceAll(strings.TrimSpace(value), `\`, "/")
+		if len(value) > 1 {
+			value = strings.TrimRight(value, "/")
+		}
+		return value
+	}
+	return normalize(first) == normalize(second)
 }
 
 func sumManagedSizes(torrents []domain.ManagedTorrent) int64 {

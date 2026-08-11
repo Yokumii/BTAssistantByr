@@ -13,6 +13,7 @@ client:
 
 strategy:
   max_disk_usage_gib: 500
+  min_free_space_gib: 10
   refresh_interval: "121s"
 
 execution:

@@ -69,7 +69,22 @@ go run ./cmd/btassistantbyr -config config/config.yaml
 
 本地配置应由 `config/config.example.yaml` 复制为 `config/config.yaml`。真实配置和运行数据均已加入 `.gitignore`，不要提交账号、密码、Cookie 或 passkey。
 
-配置加载不会填充隐式默认值，并且只接受一个不超过 1 MiB 的 YAML 文档。未知字段、缺少必填项、非法 URL、非正数容量、无法解析的轮询间隔、未知执行模式或日志选项都会让启动显式失败。`strategy.max_disk_usage_gib` 使用 GiB，`strategy.refresh_interval` 使用 Go duration 格式，例如 `121s` 或 `2m`；`tracker.proxy_url`、`tracker.cookie` 和 `client.save_path` 可以留空。
+配置加载不会填充隐式默认值，并且只接受一个不超过 1 MiB 的 YAML 文档。未知字段、缺少必填项、非法 URL、非正数容量、无法解析的轮询间隔、未知执行模式或日志选项都会让启动显式失败。`strategy.max_disk_usage_gib` 和 `strategy.min_free_space_gib` 使用 GiB，后者是每轮下载完成后必须保留的真实磁盘可用空间；`strategy.refresh_interval` 使用 Go duration 格式，例如 `121s` 或 `2m`。`tracker.proxy_url`、`tracker.cookie` 和 `client.save_path` 可以留空。
+
+磁盘安全配置示例：
+
+```yaml
+client:
+  save_path: ""
+
+strategy:
+  max_disk_usage_gib: 500
+  min_free_space_gib: 10
+```
+
+`client.save_path` 留空时，程序从 qBittorrent 读取默认下载路径。每轮严格执行“检测真实可用空间 → 生成策略 → 删除策略允许回收的旧 TopFree 文件 → 再次检测真实可用空间 → 添加全部下载”的流程。下载前要求实际可用空间至少覆盖本轮所有新种子的总大小和 `min_free_space_gib` 安全余量；检测失败、路径变化、空间不足或删除后空间未按预期释放时都会停止，且不会发送下载请求。
+
+qBittorrent WebAPI 2.15.2 及以上可按任意 `client.save_path` 查询空间。较早的 5.x 版本只公开默认下载盘空间，因此仅在 `save_path` 留空或与 qBittorrent 默认路径一致时安全回退；旧 API 配置其他路径会显式报错，不会使用运行本程序的宿主机空间代替。
 
 `execution.mode` 是必填项，只接受两种模式：
 
@@ -125,13 +140,14 @@ runtime:
 - 在 BYR 客户端会话内缓存 ID 到 Hash 的映射，减少重复详情页请求
 - 从 BYR 用户页面读取并缓存 passkey，按种子 ID 生成 qBittorrent 可用的下载 URL
 - 按指定间隔串行轮询 TopFree 列表，支持上下文取消并显式返回获取和处理错误
-- 查询指定标签的 qBittorrent 种子，并映射 Hash、名称、大小、添加时间、保存路径和标签
+- 查询指定标签的 qBittorrent 种子，并映射 Hash、名称、总大小、已下载大小、添加时间、保存路径和标签
 - 查询 qBittorrent 全量种子快照，确保识别已经存在但尚未打 `sc` 的当前 TopFree
+- 通过 qBittorrent 所在端检测实际下载路径可用空间，将安全余量纳入纯策略计算，并在删除完成后复检
 - 支持新增 URL 种子、添加标签、重新汇报、停止和删除操作；停止操作使用 qBittorrent 5.x 的 `/api/v2/torrents/stop`
 - 支持移除指定 qBittorrent 标签，用于撤销重新成为 TopFree 种子的 `toDel` 状态
 - 纯计算 TopFree 标签同步、失效标记、按容量回收、下载优先级和空间不足跳过计划
 - 容量规划只允许回收带 `sc` 标签且已不再 TopFree 的种子，当前 TopFree 和其他来源的 `toDel` 种子不会进入删除计划
-- 显式执行已校验的计划；任何写入前先预取全部下载 URL，清理固定按重新汇报、停止、删除、添加的顺序执行并在首个错误处停止
+- 显式执行已校验的计划；任何写入前先预取全部下载 URL 并复核空间，清理固定按重新汇报、停止、批量删除、空间复检、批量添加的顺序执行并在首个错误处停止
 - 支持 `request_approval` 和 `yolo` 两种执行模式；批准模式在整轮写计划执行前要求终端输入 `APPLY`，拒绝时不会触达具体执行器
 - 使用标准库结构化日志，支持终端分级颜色、无 ANSI 文件日志和不泄露凭证的 DEBUG 全流程记录
 - 单轮协调器串联全量客户端快照、纯策略规划和显式执行，并提供可直接交给定期轮询器的 Handler

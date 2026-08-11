@@ -28,6 +28,7 @@ client:
 
 strategy:
   max_disk_usage_gib: 500
+  min_free_space_gib: 10
   refresh_interval: "121s"
 
 execution:
@@ -56,7 +57,7 @@ func TestLoad(t *testing.T) {
 	if configuration.Client.BaseURL != "http://127.0.0.1:8080/webui/" || configuration.Client.Username != "qbt-user" || configuration.Client.Password != " client password " || configuration.Client.SavePath != "/downloads" {
 		t.Errorf("unexpected client configuration")
 	}
-	if configuration.Strategy.MaxDiskUsageBytes != 500*(1<<30) || configuration.Strategy.RefreshInterval != 121*time.Second {
+	if configuration.Strategy.MaxDiskUsageBytes != 500*(1<<30) || configuration.Strategy.MinFreeSpaceBytes != 10*(1<<30) || configuration.Strategy.RefreshInterval != 121*time.Second {
 		t.Errorf("unexpected strategy configuration: %+v", configuration.Strategy)
 	}
 	if configuration.Execution.Mode != domain.ExecutionModeRequestApproval {
@@ -89,6 +90,8 @@ func TestLoadRejectsInvalidConfiguration(t *testing.T) {
 		{name: "missing client password", content: strings.Replace(validYAML, `password: " client password "`, `password: ""`, 1)},
 		{name: "zero disk limit", content: strings.Replace(validYAML, "max_disk_usage_gib: 500", "max_disk_usage_gib: 0", 1)},
 		{name: "disk limit overflow", content: strings.Replace(validYAML, "max_disk_usage_gib: 500", "max_disk_usage_gib: 8589934592", 1)},
+		{name: "zero free space reserve", content: strings.Replace(validYAML, "min_free_space_gib: 10", "min_free_space_gib: 0", 1)},
+		{name: "free space reserve overflow", content: strings.Replace(validYAML, "min_free_space_gib: 10", "min_free_space_gib: 8589934592", 1)},
 		{name: "invalid interval", content: strings.Replace(validYAML, `refresh_interval: "121s"`, `refresh_interval: "later"`, 1)},
 		{name: "zero interval", content: strings.Replace(validYAML, `refresh_interval: "121s"`, `refresh_interval: "0s"`, 1)},
 		{name: "missing execution mode", content: strings.Replace(validYAML, `mode: " REQUEST_APPROVAL "`, `mode: ""`, 1)},

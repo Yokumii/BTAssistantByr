@@ -154,6 +154,7 @@ func (fixture *lifecycleFixture) configuration(mode domain.ExecutionMode, withBY
 		},
 		Strategy: config.Strategy{
 			MaxDiskUsageBytes: 10 * (1 << 30),
+			MinFreeSpaceBytes: 10 * (1 << 30),
 			RefreshInterval:   time.Hour,
 		},
 		Execution: config.Execution{Mode: mode},
@@ -172,6 +173,15 @@ func (fixture *lifecycleFixture) serveHTTP(t *testing.T, response http.ResponseW
 	case "/webui/api/v2/auth/login":
 		http.SetCookie(response, &http.Cookie{Name: "QBT_SID_8080", Value: "qbit-session", Path: "/"})
 		response.WriteHeader(http.StatusNoContent)
+	case "/webui/api/v2/app/webapiVersion":
+		assertCookie(t, request, "QBT_SID_8080", "qbit-session")
+		fmt.Fprint(response, "2.15.2")
+	case "/webui/api/v2/app/getFreeSpaceAtPathAction":
+		assertCookie(t, request, "QBT_SID_8080", "qbit-session")
+		if request.URL.Query().Get("path") != "/downloads" {
+			t.Errorf("unexpected free-space path: %q", request.URL.Query().Get("path"))
+		}
+		fmt.Fprint(response, 100*(1<<30))
 	case "/tracker/torrents.php":
 		assertCookie(t, request, "auth_token", "tracker-session")
 		fmt.Fprint(response, applicationTorrentPage())

@@ -85,9 +85,14 @@ func approvalSummary(plan Plan) string {
 	fmt.Fprintf(&summary, "- 删除种子及文件：%d\n", deleteCount)
 	fmt.Fprintf(&summary, "- 下载种子：%d\n", len(plan.Downloads))
 	fmt.Fprintf(&summary, "- 预计磁盘占用：%.2f GiB\n", bytesAsGiB(plan.ProjectedDiskUsageBytes))
+	if plan.EffectiveSavePath != "" {
+		fmt.Fprintf(&summary, "- 下载路径：%s\n", plan.EffectiveSavePath)
+		fmt.Fprintf(&summary, "- 检测可用空间：%.2f GiB\n", bytesAsGiB(plan.InitialFreeSpaceBytes))
+		fmt.Fprintf(&summary, "- 下载后保留空间：至少 %.2f GiB（预计 %.2f GiB）\n", bytesAsGiB(plan.MinFreeSpaceBytes), bytesAsGiB(plan.ProjectedFreeSpaceBytes))
+	}
 	for _, download := range plan.Downloads {
 		for _, torrent := range download.DeleteBefore {
-			fmt.Fprintf(&summary, "  删除 hash=%s name=%q size=%.2f GiB\n", torrent.Hash, torrent.Name, bytesAsGiB(torrent.SizeBytes))
+			fmt.Fprintf(&summary, "  删除 hash=%s name=%q size=%.2f GiB releasable=%.2f GiB\n", torrent.Hash, torrent.Name, bytesAsGiB(torrent.SizeBytes), bytesAsGiB(torrent.CompletedBytes))
 		}
 		fmt.Fprintf(&summary, "  下载 id=%s name=%q size=%.2f GiB\n", download.Candidate.ID, download.Candidate.Name, bytesAsGiB(download.Candidate.SizeBytes))
 	}

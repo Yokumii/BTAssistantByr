@@ -100,7 +100,7 @@ func AssembleWithLogger(
 		return nil, fmt.Errorf("create qBittorrent client: %w", err)
 	}
 
-	executor, err := topfree.NewExecutor(byrClient, qbitClient, configuration.Client.SavePath)
+	executor, err := topfree.NewExecutor(byrClient, qbitClient, configuration.Client.SavePath, configuration.Strategy.MinFreeSpaceBytes)
 	if err != nil {
 		return nil, fmt.Errorf("create TopFree executor: %w", err)
 	}
@@ -114,6 +114,8 @@ func AssembleWithLogger(
 		qbitClient,
 		guardedExecutor,
 		configuration.Strategy.MaxDiskUsageBytes,
+		configuration.Strategy.MinFreeSpaceBytes,
+		configuration.Client.SavePath,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create TopFree coordinator: %w", err)

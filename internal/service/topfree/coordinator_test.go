@@ -17,11 +17,11 @@ func TestCoordinatorRunsCompleteLocalCycle(t *testing.T) {
 	managedSource := &fakeManagedSource{torrents: []domain.ManagedTorrent{currentUntagged, staleManaged}}
 	downloadSource := &fakeDownloadSource{}
 	mutationClient := &fakeMutationClient{}
-	executor, err := NewExecutor(downloadSource, mutationClient, "/downloads")
+	executor, err := NewExecutor(downloadSource, mutationClient, "/downloads", 1)
 	if err != nil {
 		t.Fatalf("NewExecutor() error = %v", err)
 	}
-	coordinator, err := NewCoordinator(managedSource, executor, 100)
+	coordinator, err := NewCoordinator(managedSource, executor, 100, 1, "/downloads")
 	if err != nil {
 		t.Fatalf("NewCoordinator() error = %v", err)
 	}
@@ -55,11 +55,11 @@ func TestCoordinatorReturnsPlanWhenExecutionFails(t *testing.T) {
 
 	wantErr := errors.New("write failed")
 	managedSource := &fakeManagedSource{torrents: []domain.ManagedTorrent{managedTorrent(1, 10, 1)}}
-	executor, err := NewExecutor(&fakeDownloadSource{}, &fakeMutationClient{failOperation: "addTags", err: wantErr}, "")
+	executor, err := NewExecutor(&fakeDownloadSource{}, &fakeMutationClient{failOperation: "addTags", err: wantErr}, "", 1)
 	if err != nil {
 		t.Fatalf("NewExecutor() error = %v", err)
 	}
-	coordinator, err := NewCoordinator(managedSource, executor, 100)
+	coordinator, err := NewCoordinator(managedSource, executor, 100, 1, "/downloads")
 	if err != nil {
 		t.Fatalf("NewCoordinator() error = %v", err)
 	}
@@ -76,7 +76,7 @@ func TestCoordinatorStopsWhenSnapshotFails(t *testing.T) {
 	wantErr := errors.New("read failed")
 	managedSource := &fakeManagedSource{err: wantErr}
 	executor := &fakePlanExecutor{}
-	coordinator, err := NewCoordinator(managedSource, executor, 100)
+	coordinator, err := NewCoordinator(managedSource, executor, 100, 1, "/downloads")
 	if err != nil {
 		t.Fatalf("NewCoordinator() error = %v", err)
 	}
@@ -89,12 +89,31 @@ func TestCoordinatorStopsWhenSnapshotFails(t *testing.T) {
 	}
 }
 
+func TestCoordinatorStopsBeforePlanningWhenDiskCheckFails(t *testing.T) {
+	t.Parallel()
+
+	wantErr := errors.New("disk check failed")
+	managedSource := &fakeManagedSource{freeSpaceErr: wantErr}
+	executor := &fakePlanExecutor{}
+	coordinator, err := NewCoordinator(managedSource, executor, 100, 1, "/downloads")
+	if err != nil {
+		t.Fatalf("NewCoordinator() error = %v", err)
+	}
+	_, err = coordinator.RunOnce(context.Background(), []domain.Candidate{candidate(1, 10, 1, 1)})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("RunOnce() error = %v, want disk error", err)
+	}
+	if managedSource.calls != 0 || executor.calls != 0 {
+		t.Error("coordinator continued after disk check failure")
+	}
+}
+
 func TestCoordinatorHonorsCanceledContext(t *testing.T) {
 	t.Parallel()
 
 	managedSource := &fakeManagedSource{}
 	executor := &fakePlanExecutor{}
-	coordinator, err := NewCoordinator(managedSource, executor, 100)
+	coordinator, err := NewCoordinator(managedSource, executor, 100, 1, "/downloads")
 	if err != nil {
 		t.Fatalf("NewCoordinator() error = %v", err)
 	}
@@ -112,21 +131,40 @@ func TestCoordinatorHonorsCanceledContext(t *testing.T) {
 func TestNewCoordinatorValidatesDependencies(t *testing.T) {
 	t.Parallel()
 
-	if _, err := NewCoordinator(nil, &fakePlanExecutor{}, 100); !errors.Is(err, ErrManagedSourceRequired) {
+	if _, err := NewCoordinator(nil, &fakePlanExecutor{}, 100, 1, ""); !errors.Is(err, ErrManagedSourceRequired) {
 		t.Errorf("nil managed source error = %v", err)
 	}
-	if _, err := NewCoordinator(&fakeManagedSource{}, nil, 100); !errors.Is(err, ErrPlanExecutorRequired) {
+	if _, err := NewCoordinator(&fakeManagedSource{}, nil, 100, 1, ""); !errors.Is(err, ErrPlanExecutorRequired) {
 		t.Errorf("nil executor error = %v", err)
 	}
-	if _, err := NewCoordinator(&fakeManagedSource{}, &fakePlanExecutor{}, 0); !errors.Is(err, ErrInvalidDiskLimit) {
+	if _, err := NewCoordinator(&fakeManagedSource{}, &fakePlanExecutor{}, 0, 1, ""); !errors.Is(err, ErrInvalidDiskLimit) {
 		t.Errorf("invalid limit error = %v", err)
+	}
+	if _, err := NewCoordinator(&fakeManagedSource{}, &fakePlanExecutor{}, 100, 0, ""); !errors.Is(err, ErrInvalidFreeSpaceReserve) {
+		t.Errorf("invalid reserve error = %v", err)
 	}
 }
 
 type fakeManagedSource struct {
-	torrents []domain.ManagedTorrent
-	err      error
-	calls    int
+	torrents       []domain.ManagedTorrent
+	err            error
+	calls          int
+	freeSpaceErr   error
+	freeSpaceCalls int
+}
+
+func (source *fakeManagedSource) FreeSpace(ctx context.Context, configuredPath string) (domain.DiskSpace, error) {
+	if err := ctx.Err(); err != nil {
+		return domain.DiskSpace{}, err
+	}
+	source.freeSpaceCalls++
+	if source.freeSpaceErr != nil {
+		return domain.DiskSpace{}, source.freeSpaceErr
+	}
+	if configuredPath == "" {
+		configuredPath = "/downloads"
+	}
+	return domain.DiskSpace{Path: configuredPath, FreeBytes: 1 << 60}, nil
 }
 
 func (source *fakeManagedSource) ListAll(context.Context) ([]domain.ManagedTorrent, error) {

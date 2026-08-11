@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/Yokumii/BTAssistantByr/internal/domain"
 )
@@ -18,6 +19,7 @@ var (
 
 // ManagedTorrentSource supplies the complete qBittorrent snapshot used for safe planning.
 type ManagedTorrentSource interface {
+	FreeSpace(context.Context, string) (domain.DiskSpace, error)
 	ListAll(context.Context) ([]domain.ManagedTorrent, error)
 }
 
@@ -31,6 +33,8 @@ type Coordinator struct {
 	managedSource     ManagedTorrentSource
 	executor          PlanExecutor
 	maxDiskUsageBytes int64
+	minFreeSpaceBytes int64
+	savePath          string
 	logger            *slog.Logger
 }
 
@@ -44,6 +48,8 @@ func NewCoordinator(
 	managedSource ManagedTorrentSource,
 	executor PlanExecutor,
 	maxDiskUsageBytes int64,
+	minFreeSpaceBytes int64,
+	savePath string,
 ) (*Coordinator, error) {
 	if managedSource == nil {
 		return nil, ErrManagedSourceRequired
@@ -54,10 +60,15 @@ func NewCoordinator(
 	if maxDiskUsageBytes <= 0 {
 		return nil, ErrInvalidDiskLimit
 	}
+	if minFreeSpaceBytes <= 0 {
+		return nil, ErrInvalidFreeSpaceReserve
+	}
 	return &Coordinator{
 		managedSource:     managedSource,
 		executor:          executor,
 		maxDiskUsageBytes: maxDiskUsageBytes,
+		minFreeSpaceBytes: minFreeSpaceBytes,
+		savePath:          strings.TrimSpace(savePath),
 	}, nil
 }
 
@@ -68,6 +79,18 @@ func (c *Coordinator) RunOnce(ctx context.Context, candidates []domain.Candidate
 		return Plan{}, err
 	}
 	if c.logger != nil {
+		c.logger.DebugContext(ctx, "checking qBittorrent disk space before planning", "configured_save_path", c.savePath)
+	}
+	diskSpace, err := c.managedSource.FreeSpace(ctx, c.savePath)
+	if err != nil {
+		return Plan{}, fmt.Errorf("check qBittorrent free space before planning: %w", err)
+	}
+	if c.logger != nil {
+		c.logger.InfoContext(ctx, "qBittorrent disk space checked before planning",
+			"save_path", diskSpace.Path,
+			"free_bytes", diskSpace.FreeBytes,
+			"reserve_bytes", c.minFreeSpaceBytes,
+		)
 		c.logger.DebugContext(ctx, "loading complete qBittorrent snapshot")
 	}
 	managed, err := c.managedSource.ListAll(ctx)
@@ -77,7 +100,7 @@ func (c *Coordinator) RunOnce(ctx context.Context, candidates []domain.Candidate
 	if c.logger != nil {
 		c.logger.DebugContext(ctx, "qBittorrent snapshot loaded", "torrents", len(managed))
 	}
-	plan, err := BuildPlan(c.maxDiskUsageBytes, candidates, managed)
+	plan, err := BuildPlanWithDiskSpace(c.maxDiskUsageBytes, diskSpace, c.minFreeSpaceBytes, candidates, managed)
 	if err != nil {
 		return Plan{}, fmt.Errorf("build TopFree plan: %w", err)
 	}
@@ -90,6 +113,9 @@ func (c *Coordinator) RunOnce(ctx context.Context, candidates []domain.Candidate
 			"skipped", len(plan.Skipped),
 			"current_disk_bytes", plan.CurrentDiskUsageBytes,
 			"projected_disk_bytes", plan.ProjectedDiskUsageBytes,
+			"initial_free_bytes", plan.InitialFreeSpaceBytes,
+			"projected_free_bytes", plan.ProjectedFreeSpaceBytes,
+			"reserve_bytes", plan.MinFreeSpaceBytes,
 		)
 		c.logger.DebugContext(ctx, "TopFree plan details",
 			"tag_hashes", plan.TagAsManaged,

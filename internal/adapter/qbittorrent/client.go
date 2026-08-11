@@ -19,7 +19,10 @@ import (
 	"github.com/Yokumii/BTAssistantByr/internal/port"
 )
 
-const maxTorrentListSize = 16 << 20
+const (
+	maxTorrentListSize  = 16 << 20
+	maxTextResponseSize = 64 << 10
+)
 
 var (
 	// ErrSessionExpired indicates that qBittorrent rejected the session cookie.
@@ -34,6 +37,8 @@ var (
 	ErrInvalidTorrentHash = errors.New("invalid qBittorrent torrent hash")
 	// ErrInvalidSourceURL indicates that an add request has no supported torrent URL.
 	ErrInvalidSourceURL = errors.New("invalid qBittorrent torrent source URL")
+	// ErrFreeSpaceUnsupported indicates that this Web API cannot inspect a custom save path.
+	ErrFreeSpaceUnsupported = errors.New("qBittorrent Web API cannot inspect free space at the configured save path")
 )
 
 var torrentHashPattern = regexp.MustCompile(`(?i)^[0-9a-f]{40}(?:[0-9a-f]{24})?$`)
@@ -60,6 +65,175 @@ func (a *Authenticator) NewClient(credential Credential) (*Client, error) {
 	}, nil
 }
 
+// FreeSpace returns free bytes measured by qBittorrent at the effective save path.
+// WebAPI 2.15.2+ supports arbitrary paths. Older APIs are safe only for the
+// qBittorrent default save path exposed by sync/maindata.
+func (c *Client) FreeSpace(ctx context.Context, configuredPath string) (domain.DiskSpace, error) {
+	configuredPath = strings.TrimSpace(configuredPath)
+	version, err := c.webAPIVersion(ctx)
+	if err != nil {
+		return domain.DiskSpace{}, fmt.Errorf("get qBittorrent Web API version: %w", err)
+	}
+
+	effectivePath := configuredPath
+	if effectivePath == "" {
+		effectivePath, err = c.defaultSavePath(ctx)
+		if err != nil {
+			return domain.DiskSpace{}, fmt.Errorf("get qBittorrent default save path: %w", err)
+		}
+	}
+
+	if version.atLeast(2, 15, 2) {
+		freeBytes, err := c.freeSpaceAtPath(ctx, effectivePath)
+		if err != nil {
+			return domain.DiskSpace{}, fmt.Errorf("get qBittorrent free space at %q: %w", effectivePath, err)
+		}
+		return domain.DiskSpace{Path: effectivePath, FreeBytes: freeBytes}, nil
+	}
+
+	if configuredPath != "" {
+		defaultPath, err := c.defaultSavePath(ctx)
+		if err != nil {
+			return domain.DiskSpace{}, fmt.Errorf("get qBittorrent default save path: %w", err)
+		}
+		if !sameSavePath(configuredPath, defaultPath) {
+			return domain.DiskSpace{}, fmt.Errorf("%w: WebAPI %s only reports its default path %q, configured path is %q", ErrFreeSpaceUnsupported, version, defaultPath, configuredPath)
+		}
+		effectivePath = defaultPath
+	}
+
+	freeBytes, err := c.defaultFreeSpace(ctx)
+	if err != nil {
+		return domain.DiskSpace{}, fmt.Errorf("get qBittorrent default-path free space: %w", err)
+	}
+	confirmedPath, err := c.defaultSavePath(ctx)
+	if err != nil {
+		return domain.DiskSpace{}, fmt.Errorf("confirm qBittorrent default save path: %w", err)
+	}
+	if !sameSavePath(effectivePath, confirmedPath) {
+		return domain.DiskSpace{}, fmt.Errorf("%w: qBittorrent default save path changed from %q to %q during free-space check", ErrFreeSpaceUnsupported, effectivePath, confirmedPath)
+	}
+	return domain.DiskSpace{Path: effectivePath, FreeBytes: freeBytes}, nil
+}
+
+type apiVersion struct {
+	major int
+	minor int
+	patch int
+}
+
+func (version apiVersion) String() string {
+	return fmt.Sprintf("%d.%d.%d", version.major, version.minor, version.patch)
+}
+
+func (version apiVersion) atLeast(major, minor, patch int) bool {
+	if version.major != major {
+		return version.major > major
+	}
+	if version.minor != minor {
+		return version.minor > minor
+	}
+	return version.patch >= patch
+}
+
+func (c *Client) webAPIVersion(ctx context.Context) (apiVersion, error) {
+	value, err := c.getText(ctx, "api/v2/app/webapiVersion", nil)
+	if err != nil {
+		return apiVersion{}, err
+	}
+	parts := strings.Split(value, ".")
+	if len(parts) != 3 {
+		return apiVersion{}, ErrInvalidResponse
+	}
+	numbers := make([]int, 3)
+	for index, part := range parts {
+		numbers[index], err = strconv.Atoi(part)
+		if err != nil || numbers[index] < 0 {
+			return apiVersion{}, ErrInvalidResponse
+		}
+	}
+	return apiVersion{major: numbers[0], minor: numbers[1], patch: numbers[2]}, nil
+}
+
+func (c *Client) defaultSavePath(ctx context.Context) (string, error) {
+	value, err := c.getText(ctx, "api/v2/app/defaultSavePath", nil)
+	if err != nil {
+		return "", err
+	}
+	if value == "" {
+		return "", ErrInvalidResponse
+	}
+	return value, nil
+}
+
+func (c *Client) freeSpaceAtPath(ctx context.Context, path string) (int64, error) {
+	value, err := c.getText(ctx, "api/v2/app/getFreeSpaceAtPathAction", url.Values{"path": {path}})
+	if err != nil {
+		return 0, err
+	}
+	return parseFreeBytes(value)
+}
+
+func (c *Client) defaultFreeSpace(ctx context.Context) (int64, error) {
+	response, err := c.request(ctx, http.MethodGet, "api/v2/sync/maindata", url.Values{"rid": {"0"}}, "", nil)
+	if err != nil {
+		return 0, err
+	}
+	defer response.Body.Close()
+
+	var payload struct {
+		ServerState struct {
+			FreeSpaceOnDisk *int64 `json:"free_space_on_disk"`
+		} `json:"server_state"`
+	}
+	decoder := json.NewDecoder(io.LimitReader(response.Body, maxTorrentListSize))
+	if err := decoder.Decode(&payload); err != nil {
+		return 0, fmt.Errorf("%w: %v", ErrInvalidResponse, err)
+	}
+	if err := ensureJSONEnd(decoder); err != nil {
+		return 0, err
+	}
+	if payload.ServerState.FreeSpaceOnDisk == nil || *payload.ServerState.FreeSpaceOnDisk < 0 {
+		return 0, ErrInvalidResponse
+	}
+	return *payload.ServerState.FreeSpaceOnDisk, nil
+}
+
+func (c *Client) getText(ctx context.Context, path string, query url.Values) (string, error) {
+	response, err := c.request(ctx, http.MethodGet, path, query, "", nil)
+	if err != nil {
+		return "", err
+	}
+	defer response.Body.Close()
+	contents, err := io.ReadAll(io.LimitReader(response.Body, maxTextResponseSize+1))
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrInvalidResponse, err)
+	}
+	if len(contents) > maxTextResponseSize {
+		return "", ErrInvalidResponse
+	}
+	return strings.TrimSpace(string(contents)), nil
+}
+
+func parseFreeBytes(value string) (int64, error) {
+	freeBytes, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil || freeBytes < 0 {
+		return 0, ErrInvalidResponse
+	}
+	return freeBytes, nil
+}
+
+func sameSavePath(first, second string) bool {
+	normalize := func(value string) string {
+		value = strings.ReplaceAll(strings.TrimSpace(value), `\`, "/")
+		if len(value) > 1 {
+			value = strings.TrimRight(value, "/")
+		}
+		return value
+	}
+	return normalize(first) == normalize(second)
+}
+
 // ListAll returns every torrent visible to the authenticated qBittorrent session.
 func (c *Client) ListAll(ctx context.Context) ([]domain.ManagedTorrent, error) {
 	return c.list(ctx, nil)
@@ -82,12 +256,13 @@ func (c *Client) list(ctx context.Context, query url.Values) ([]domain.ManagedTo
 	defer response.Body.Close()
 
 	var payload []struct {
-		Hash     string `json:"hash"`
-		Name     string `json:"name"`
-		Size     int64  `json:"size"`
-		AddedOn  int64  `json:"added_on"`
-		SavePath string `json:"save_path"`
-		Tags     string `json:"tags"`
+		Hash      string `json:"hash"`
+		Name      string `json:"name"`
+		Size      int64  `json:"size"`
+		Completed int64  `json:"completed"`
+		AddedOn   int64  `json:"added_on"`
+		SavePath  string `json:"save_path"`
+		Tags      string `json:"tags"`
 	}
 	decoder := json.NewDecoder(io.LimitReader(response.Body, maxTorrentListSize))
 	if err := decoder.Decode(&payload); err != nil {
@@ -99,16 +274,17 @@ func (c *Client) list(ctx context.Context, query url.Values) ([]domain.ManagedTo
 
 	torrents := make([]domain.ManagedTorrent, 0, len(payload))
 	for _, item := range payload {
-		if !torrentHashPattern.MatchString(item.Hash) || strings.TrimSpace(item.Name) == "" || item.Size < 0 || item.AddedOn < 0 {
+		if !torrentHashPattern.MatchString(item.Hash) || strings.TrimSpace(item.Name) == "" || item.Size < 0 || item.Completed < 0 || item.Completed > item.Size || item.AddedOn < 0 {
 			return nil, ErrInvalidResponse
 		}
 		torrents = append(torrents, domain.ManagedTorrent{
-			Hash:      domain.TorrentHash(strings.ToLower(item.Hash)),
-			Name:      item.Name,
-			SizeBytes: item.Size,
-			AddedAt:   time.Unix(item.AddedOn, 0),
-			SavePath:  item.SavePath,
-			Tags:      splitTags(item.Tags),
+			Hash:           domain.TorrentHash(strings.ToLower(item.Hash)),
+			Name:           item.Name,
+			SizeBytes:      item.Size,
+			CompletedBytes: item.Completed,
+			AddedAt:        time.Unix(item.AddedOn, 0),
+			SavePath:       item.SavePath,
+			Tags:           splitTags(item.Tags),
 		})
 	}
 	return torrents, nil

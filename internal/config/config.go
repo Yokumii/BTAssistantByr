@@ -36,6 +36,7 @@ type Client struct {
 // Strategy contains TopFree strategy settings.
 type Strategy struct {
 	MaxDiskUsageBytes int64
+	MinFreeSpaceBytes int64
 	RefreshInterval   time.Duration
 }
 
