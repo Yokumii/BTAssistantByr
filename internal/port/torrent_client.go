@@ -15,8 +15,10 @@ type AddTorrentRequest struct {
 
 // TorrentClient exposes the client operations required by strategies.
 type TorrentClient interface {
+	ListAll(context.Context) ([]domain.ManagedTorrent, error)
 	ListByTag(context.Context, string) ([]domain.ManagedTorrent, error)
 	AddTags(context.Context, []domain.TorrentHash, []string) error
+	RemoveTags(context.Context, []domain.TorrentHash, []string) error
 	Add(context.Context, AddTorrentRequest) error
 	Reannounce(context.Context, []domain.TorrentHash) error
 	Pause(context.Context, []domain.TorrentHash) error

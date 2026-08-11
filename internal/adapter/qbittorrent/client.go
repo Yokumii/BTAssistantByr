@@ -60,14 +60,22 @@ func (a *Authenticator) NewClient(credential Credential) (*Client, error) {
 	}, nil
 }
 
+// ListAll returns every torrent visible to the authenticated qBittorrent session.
+func (c *Client) ListAll(ctx context.Context) ([]domain.ManagedTorrent, error) {
+	return c.list(ctx, nil)
+}
+
 // ListByTag returns torrents carrying exactly the requested qBittorrent tag.
 func (c *Client) ListByTag(ctx context.Context, tag string) ([]domain.ManagedTorrent, error) {
 	tag = strings.TrimSpace(tag)
 	if tag == "" {
 		return nil, ErrTagRequired
 	}
+	return c.list(ctx, url.Values{"tag": {tag}})
+}
 
-	response, err := c.request(ctx, http.MethodGet, "api/v2/torrents/info", url.Values{"tag": {tag}}, "", nil)
+func (c *Client) list(ctx context.Context, query url.Values) ([]domain.ManagedTorrent, error) {
+	response, err := c.request(ctx, http.MethodGet, "api/v2/torrents/info", query, "", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -117,6 +125,22 @@ func (c *Client) AddTags(ctx context.Context, hashes []domain.TorrentHash, tags 
 		return err
 	}
 	return c.postForm(ctx, "api/v2/torrents/addTags", url.Values{
+		"hashes": {hashValue},
+		"tags":   {tagValue},
+	})
+}
+
+// RemoveTags removes tags from the selected torrents.
+func (c *Client) RemoveTags(ctx context.Context, hashes []domain.TorrentHash, tags []string) error {
+	hashValue, err := joinHashes(hashes)
+	if err != nil {
+		return err
+	}
+	tagValue, err := joinTags(tags)
+	if err != nil {
+		return err
+	}
+	return c.postForm(ctx, "api/v2/torrents/removeTags", url.Values{
 		"hashes": {hashValue},
 		"tags":   {tagValue},
 	})

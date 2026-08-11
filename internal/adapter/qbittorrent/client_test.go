@@ -59,6 +59,33 @@ func TestClientListByTag(t *testing.T) {
 	}
 }
 
+func TestClientListAll(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || request.URL.Path != "/webui/api/v2/torrents/info" {
+			http.Error(response, "unexpected endpoint", http.StatusNotFound)
+			return
+		}
+		if request.URL.RawQuery != "" {
+			http.Error(response, "unexpected query", http.StatusBadRequest)
+			return
+		}
+		assertAuthenticatedRequest(t, request)
+		fmt.Fprint(response, "[]")
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server)
+	torrents, err := client.ListAll(context.Background())
+	if err != nil {
+		t.Fatalf("ListAll() error = %v", err)
+	}
+	if len(torrents) != 0 {
+		t.Fatalf("len(torrents) = %d, want 0", len(torrents))
+	}
+}
+
 func TestClientMutationRequests(t *testing.T) {
 	t.Parallel()
 
@@ -87,6 +114,8 @@ func TestClientMutationRequests(t *testing.T) {
 			return
 		case "/webui/api/v2/torrents/addTags":
 			assertForm(t, request, fixtureHashOne+"|"+fixtureHashTwo, "sc,toDel", "")
+		case "/webui/api/v2/torrents/removeTags":
+			assertForm(t, request, fixtureHashOne, "toDel", "")
 		case "/webui/api/v2/torrents/reannounce":
 			assertForm(t, request, fixtureHashOne, "", "")
 		case "/webui/api/v2/torrents/stop":
@@ -113,6 +142,9 @@ func TestClientMutationRequests(t *testing.T) {
 	if err := client.AddTags(ctx, []domain.TorrentHash{fixtureHashOne, fixtureHashTwo}, []string{"sc", "toDel"}); err != nil {
 		t.Fatalf("AddTags() error = %v", err)
 	}
+	if err := client.RemoveTags(ctx, []domain.TorrentHash{fixtureHashOne}, []string{"toDel"}); err != nil {
+		t.Fatalf("RemoveTags() error = %v", err)
+	}
 	if err := client.Reannounce(ctx, []domain.TorrentHash{fixtureHashOne}); err != nil {
 		t.Fatalf("Reannounce() error = %v", err)
 	}
@@ -126,6 +158,7 @@ func TestClientMutationRequests(t *testing.T) {
 	for _, path := range []string{
 		"/webui/api/v2/torrents/add",
 		"/webui/api/v2/torrents/addTags",
+		"/webui/api/v2/torrents/removeTags",
 		"/webui/api/v2/torrents/reannounce",
 		"/webui/api/v2/torrents/stop",
 		"/webui/api/v2/torrents/delete",
