@@ -17,6 +17,8 @@ import (
 
 const defaultConfigPath = "config/config.yaml"
 
+var version = "dev"
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -40,11 +42,18 @@ func run(
 	flags := flag.NewFlagSet("btassistantbyr", flag.ContinueOnError)
 	flags.SetOutput(errorOutput)
 	configPath := flags.String("config", defaultConfigPath, "YAML configuration file path")
+	showVersion := flags.Bool("version", false, "print version and exit")
 	if err := flags.Parse(arguments); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 {
 		return fmt.Errorf("unexpected positional arguments: %v", flags.Args())
+	}
+	if *showVersion {
+		if _, err := fmt.Fprintln(output, version); err != nil {
+			return fmt.Errorf("write version: %w", err)
+		}
+		return nil
 	}
 
 	configuration, err := config.Load(*configPath)

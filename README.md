@@ -33,11 +33,13 @@ BTAssistantByr 是对 [BYRBT_RyukawaChihiro](https://github.com/LetMeFly666/BYRB
 ## 开发命令
 
 ```bash
-make fmt   # 格式化 Go 文件
-make test  # 运行测试并检查所有包可编译
-make vet   # 运行静态检查
-make build # 构建到 bin/btassistantbyr
-make check # 依次执行 test、vet、build
+make fmt       # 格式化 Go 文件
+make fmt-check # 检查 Go 文件格式但不修改
+make test      # 运行测试并检查所有包可编译
+make vet       # 运行静态检查
+make build     # 构建到 bin/btassistantbyr
+make check     # 依次执行 test、vet、build
+make ci        # 执行格式检查、竞态测试、vet 和构建
 ```
 
 ## 运行
@@ -54,6 +56,14 @@ make build
 ```bash
 go run ./cmd/btassistantbyr -config config/config.yaml
 ```
+
+查看当前构建版本：
+
+```bash
+./bin/btassistantbyr -version
+```
+
+本地构建显示 `dev`，Release 中的二进制显示对应 Git 标签，例如 `v1.2.3` 或 `v1.2.3-alpha.1`。
 
 程序启动时会依次完成配置加载、BYR 会话建立、qBittorrent 登录和依赖装配，随后立即执行第一轮 TopFree 获取与规划，再按 `strategy.refresh_interval` 串行轮询。任何认证、页面解析、客户端请求、策略或执行错误都会终止进程并返回非零退出码；按 `Ctrl+C` 或发送 `SIGTERM` 会正常取消当前请求和轮询。批准提示正在等待输入时也可以直接按 `Ctrl+C` 退出。
 
@@ -102,6 +112,49 @@ tracker:
 ```
 
 该代理只作用于 BYR 适配器，不会代理本机 qBittorrent 请求。
+
+## CI/CD
+
+仓库包含两个 GitHub Actions 工作流：
+
+- `CI / verify`：任意分支发生 push，以及 PR 创建、重新打开或提交更新时运行 `make ci`，覆盖 `gofmt` 检查、全量竞态测试、`go vet` 和构建。
+- `Release / build-and-publish`：推送符合规则的 `v*` 标签时再次执行完整 CI，校验标签所属分支，构建多平台压缩包、生成 `SHA256SUMS` 并发布 GitHub Release。
+
+工作流触发 CI 并不会自动修改仓库的合并权限。要强制 PR 在 CI 成功前不能合并，需要在 GitHub 仓库的 Rulesets 或 Branch protection 中，为 `main` 和 `dev` 启用“Require status checks to pass”，并选择 `CI / verify` 作为必需检查。
+
+发布标签遵循以下规则：
+
+- 正式版本：`vMAJOR.MINOR.PATCH`，例如 `v1.2.3`；标签提交必须包含在 `main` 中，创建普通 Release。
+- 测试版本：`vMAJOR.MINOR.PATCH-alpha[.N]`、`beta[.N]` 或 `rc[.N]`，例如 `v1.2.3-alpha.1`；标签提交必须包含在 `dev` 中，创建 GitHub Pre-release。
+- 普通 `main` 或 `dev` push 只运行 CI。只有推送版本标签才会打包和发布，避免每次提交都产生 Release。
+
+发布测试版本：
+
+```bash
+git switch dev
+git pull --ff-only origin dev
+git tag -a v1.2.3-alpha.1 -m "v1.2.3-alpha.1"
+git push origin dev
+git push origin v1.2.3-alpha.1
+```
+
+发布正式版本时，先确保目标提交已经进入 `main`：
+
+```bash
+git switch main
+git pull --ff-only origin main
+git tag -a v1.2.3 -m "v1.2.3"
+git push origin main
+git push origin v1.2.3
+```
+
+每个 Release 包含以下平台：
+
+- Linux：`amd64`、`arm64`
+- macOS：`amd64`、`arm64`
+- Windows：`amd64`、`arm64`
+
+Unix 平台使用 `.tar.gz`，Windows 使用 `.zip`。每个压缩包还包含 `LICENSE`、`README.md` 和 `config.example.yaml`。
 
 ## 开发阶段
 

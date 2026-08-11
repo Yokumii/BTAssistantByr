@@ -41,6 +41,19 @@ func TestRunHelp(t *testing.T) {
 	}
 }
 
+func TestRunVersionDoesNotLoadConfiguration(t *testing.T) {
+	t.Parallel()
+
+	var output bytes.Buffer
+	err := run(context.Background(), []string{"-version"}, strings.NewReader(""), &output, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	if output.String() != version+"\n" {
+		t.Errorf("version output = %q, want %q", output.String(), version+"\n")
+	}
+}
+
 func TestRunRejectsPositionalArguments(t *testing.T) {
 	t.Parallel()
 
