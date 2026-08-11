@@ -26,6 +26,7 @@ func TestCoordinatorRunsCompleteLocalCycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCoordinator() error = %v", err)
 	}
+	coordinator.now = func() time.Time { return fixtureTime }
 
 	plan, err := coordinator.RunOnce(context.Background(), []domain.Candidate{
 		candidate(1, 10, 1, 1),

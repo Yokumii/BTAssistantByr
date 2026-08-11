@@ -57,8 +57,8 @@ func NewPoller(source Source, refreshInterval, queueCheckInterval time.Duration)
 	return &Poller{source: source, refreshInterval: refreshInterval, queueCheckInterval: queueCheckInterval}, nil
 }
 
-// Run blocks until cancellation or a non-network error. Exhausted transient
-// failures skip the current schedule without replaying a complete strategy cycle.
+// Run blocks until cancellation or a terminal error. Exhausted transient network
+// failures and temporary disk shortages skip the current strategy cycle.
 func (p *Poller) Run(ctx context.Context, handler Handler) error {
 	if handler == nil {
 		return ErrHandlerRequired
@@ -152,6 +152,17 @@ func (p *Poller) handle(ctx context.Context, handler Handler, snapshot []domain.
 	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr
+	}
+	if errors.Is(err, ErrInsufficientDiskSpace) {
+		if p.logger != nil {
+			p.logger.WarnContext(ctx, "TopFree queue cycle deferred until disk space is available",
+				"trigger", trigger,
+				"round", round,
+				"next_queue_check_in", p.queueCheckInterval,
+				"error", err,
+			)
+		}
+		return nil
 	}
 	if !netretry.IsTransient(err) {
 		return fmt.Errorf("handle TopFree torrents: %w", err)

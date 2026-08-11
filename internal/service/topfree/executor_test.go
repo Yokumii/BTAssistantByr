@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Yokumii/BTAssistantByr/internal/domain"
 	"github.com/Yokumii/BTAssistantByr/internal/port"
@@ -200,6 +201,7 @@ func TestExecutorRechecksDiskSpaceAfterCleanupBeforeAdd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewExecutor() error = %v", err)
 	}
+	executor.spaceCheckAttempts = 0
 	cleanup := managedTorrent(4, 30, 1, ManagedTag)
 	cleanup.SavePath = "/downloads"
 	err = executor.Execute(context.Background(), Plan{Downloads: []DownloadPlan{{
@@ -220,6 +222,68 @@ func TestExecutorRechecksDiskSpaceAfterCleanupBeforeAdd(t *testing.T) {
 	}
 	if client.freeSpaceCalls != 2 {
 		t.Errorf("FreeSpace() calls = %d, want 2", client.freeSpaceCalls)
+	}
+}
+
+func TestExecutorWaitsForWindowsDiskCleanupBeforeAdd(t *testing.T) {
+	t.Parallel()
+
+	client := &fakeMutationClient{
+		freeSpaceSequence: []int64{30, 30, 60},
+		freeSpacePath:     `F:\种子`,
+	}
+	executor, err := NewExecutor(&fakeDownloadSource{}, client, `F:\种子`, 10)
+	if err != nil {
+		t.Fatalf("NewExecutor() error = %v", err)
+	}
+	executor.spaceCheckInterval = 0
+	executor.spaceCheckAttempts = 1
+	cleanup := managedTorrent(4, 30, 1, ManagedTag)
+	cleanup.SavePath = `F:\种子`
+	err = executor.Execute(context.Background(), Plan{Downloads: []DownloadPlan{{
+		Candidate:    candidate(3, 40, 1, 1),
+		DeleteBefore: []domain.ManagedTorrent{cleanup},
+	}}})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	wantEvents := []string{"freeSpace", "reannounce", "pause", "delete", "freeSpace", "freeSpace", "add"}
+	if !reflect.DeepEqual(client.events, wantEvents) {
+		t.Fatalf("events = %v, want %v", client.events, wantEvents)
+	}
+}
+
+func TestExecutorStopsWaitingForDiskCleanupOnCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := &fakeMutationClient{
+		freeSpaceSequence: []int64{30, 30},
+		onFreeSpace: func(call int) {
+			if call == 2 {
+				cancel()
+			}
+		},
+	}
+	executor, err := NewExecutor(&fakeDownloadSource{}, client, "/downloads", 10)
+	if err != nil {
+		t.Fatalf("NewExecutor() error = %v", err)
+	}
+	executor.spaceCheckInterval = time.Hour
+	cleanup := managedTorrent(4, 30, 1, ManagedTag)
+	cleanup.SavePath = "/downloads"
+	err = executor.Execute(ctx, Plan{Downloads: []DownloadPlan{{
+		Candidate:    candidate(3, 40, 1, 1),
+		DeleteBefore: []domain.ManagedTorrent{cleanup},
+	}}})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Execute() error = %v, want context.Canceled", err)
+	}
+	for _, call := range client.calls {
+		if call.name == "add" {
+			t.Fatal("download was added after disk cleanup wait was canceled")
+		}
 	}
 }
 
@@ -427,6 +491,7 @@ type fakeMutationClient struct {
 	freeSpacePaths    []string
 	freeSpaceErr      error
 	freeSpaceCalls    int
+	onFreeSpace       func(int)
 }
 
 func (client *fakeMutationClient) FreeSpace(ctx context.Context, configuredPath string) (domain.DiskSpace, error) {
@@ -435,6 +500,9 @@ func (client *fakeMutationClient) FreeSpace(ctx context.Context, configuredPath 
 	}
 	client.freeSpaceCalls++
 	client.events = append(client.events, "freeSpace")
+	if client.onFreeSpace != nil {
+		client.onFreeSpace(client.freeSpaceCalls)
+	}
 	if client.freeSpaceErr != nil {
 		return domain.DiskSpace{}, client.freeSpaceErr
 	}

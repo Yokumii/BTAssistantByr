@@ -3,6 +3,7 @@ package topfree
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -185,6 +186,35 @@ func TestPollerSkipsTransientHandlerFailureAndChecksQueueAgain(t *testing.T) {
 		handles++
 		if handles == 1 {
 			return netretry.Transient(errors.New("qBittorrent unavailable"))
+		}
+		cancel()
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want context.Canceled", err)
+	}
+	if fetches != 1 || handles != 2 {
+		t.Fatalf("fetches = %d, handles = %d, want 1 and 2", fetches, handles)
+	}
+}
+
+func TestPollerDefersDiskShortageAndChecksQueueAgain(t *testing.T) {
+	t.Parallel()
+
+	var fetches int
+	var handles int
+	poller, err := NewPoller(sourceFunc(func(context.Context) ([]domain.Candidate, error) {
+		fetches++
+		return []domain.Candidate{{ID: "fixture"}}, nil
+	}), time.Hour, time.Millisecond)
+	if err != nil {
+		t.Fatalf("NewPoller() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	err = poller.Run(ctx, func(context.Context, []domain.Candidate) error {
+		handles++
+		if handles == 1 {
+			return fmt.Errorf("verify cleanup: %w", ErrInsufficientDiskSpace)
 		}
 		cancel()
 		return nil

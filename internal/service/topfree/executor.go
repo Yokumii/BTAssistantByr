@@ -8,9 +8,15 @@ import (
 	"math"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/Yokumii/BTAssistantByr/internal/domain"
 	"github.com/Yokumii/BTAssistantByr/internal/port"
+)
+
+const (
+	cleanupSpaceCheckInterval = time.Second
+	cleanupSpaceCheckAttempts = 30
 )
 
 var (
@@ -44,11 +50,13 @@ type MutationClient interface {
 
 // Executor applies a previously computed Plan. It is not started automatically.
 type Executor struct {
-	source            DownloadURLSource
-	client            MutationClient
-	savePath          string
-	minFreeSpaceBytes int64
-	logger            *slog.Logger
+	source             DownloadURLSource
+	client             MutationClient
+	savePath           string
+	minFreeSpaceBytes  int64
+	logger             *slog.Logger
+	spaceCheckInterval time.Duration
+	spaceCheckAttempts int
 }
 
 // SetLogger enables detailed execution logs. It must be called before Execute.
@@ -68,10 +76,12 @@ func NewExecutor(source DownloadURLSource, client MutationClient, savePath strin
 		return nil, ErrInvalidFreeSpaceReserve
 	}
 	return &Executor{
-		source:            source,
-		client:            client,
-		savePath:          strings.TrimSpace(savePath),
-		minFreeSpaceBytes: minFreeSpaceBytes,
+		source:             source,
+		client:             client,
+		savePath:           strings.TrimSpace(savePath),
+		minFreeSpaceBytes:  minFreeSpaceBytes,
+		spaceCheckInterval: cleanupSpaceCheckInterval,
+		spaceCheckAttempts: cleanupSpaceCheckAttempts,
 	}, nil
 }
 
@@ -452,32 +462,103 @@ func (e *Executor) verifyDiskSpaceAfterCleanup(ctx context.Context, plan *prepar
 	if len(plan.downloads) == 0 {
 		return nil
 	}
-	space, err := e.client.FreeSpace(ctx, e.savePath)
-	if err != nil {
-		return fmt.Errorf("check qBittorrent free space after cleanup: %w", err)
-	}
-	if err := validateDiskSpace(space); err != nil {
-		return err
-	}
-	if planSpacePath := strings.TrimSpace(plan.effectiveSavePath); planSpacePath != "" && !sameDiskPath(planSpacePath, space.Path) {
-		return fmt.Errorf("%w: save path changed from %q to %q after cleanup", ErrInvalidPlan, planSpacePath, space.Path)
-	}
 	required, err := requiredDownloadSpace(plan.downloads, e.minFreeSpaceBytes)
 	if err != nil {
 		return err
 	}
-	if e.logger != nil {
-		e.logger.InfoContext(ctx, "qBittorrent disk space verified after cleanup",
-			"save_path", space.Path,
-			"free_bytes", space.FreeBytes,
-			"required_bytes", required,
-			"reserve_bytes", e.minFreeSpaceBytes,
-		)
+
+	for check := 0; ; check++ {
+		space, err := e.client.FreeSpace(ctx, e.savePath)
+		if err != nil {
+			return fmt.Errorf("check qBittorrent free space after cleanup: %w", err)
+		}
+		if err := validateDiskSpace(space); err != nil {
+			return err
+		}
+		if planSpacePath := strings.TrimSpace(plan.effectiveSavePath); planSpacePath != "" && !sameDiskPath(planSpacePath, space.Path) {
+			return fmt.Errorf("%w: save path changed from %q to %q after cleanup", ErrInvalidPlan, planSpacePath, space.Path)
+		}
+		if e.logger != nil {
+			e.logger.DebugContext(ctx, "qBittorrent disk space checked after cleanup",
+				"save_path", space.Path,
+				"free_bytes", space.FreeBytes,
+				"required_bytes", required,
+				"reserve_bytes", e.minFreeSpaceBytes,
+				"check", check+1,
+			)
+		}
+		if space.FreeBytes >= required {
+			if e.logger != nil {
+				e.logger.InfoContext(ctx, "qBittorrent disk space verified after cleanup",
+					"save_path", space.Path,
+					"free_bytes", space.FreeBytes,
+					"required_bytes", required,
+					"reserve_bytes", e.minFreeSpaceBytes,
+					"checks", check+1,
+				)
+			}
+			return nil
+		}
+
+		spaceErr := diskSpaceError(space.Path, space.FreeBytes, required, e.minFreeSpaceBytes)
+		if !cleanupCanReleaseSpace(plan, space.Path) || check >= e.spaceCheckAttempts {
+			if e.logger != nil && check > 0 {
+				e.logger.WarnContext(ctx, "qBittorrent disk cleanup has not released enough space; deferring download",
+					"save_path", space.Path,
+					"free_bytes", space.FreeBytes,
+					"required_bytes", required,
+					"reserve_bytes", e.minFreeSpaceBytes,
+					"checks", check+1,
+				)
+			}
+			return spaceErr
+		}
+		if e.logger != nil && check == 0 {
+			e.logger.InfoContext(ctx, "waiting for qBittorrent disk cleanup to release space",
+				"save_path", space.Path,
+				"free_bytes", space.FreeBytes,
+				"required_bytes", required,
+				"check_interval", e.spaceCheckInterval,
+				"max_checks", e.spaceCheckAttempts+1,
+			)
+		}
+		if err := waitForSpaceCheck(ctx, e.spaceCheckInterval); err != nil {
+			return err
+		}
 	}
-	if space.FreeBytes < required {
-		return diskSpaceError(space.Path, space.FreeBytes, required, e.minFreeSpaceBytes)
+}
+
+func cleanupCanReleaseSpace(plan *preparedExecutionPlan, path string) bool {
+	for _, torrent := range plan.removeExpired {
+		if torrent.CompletedBytes > 0 && sameDiskPath(torrent.SavePath, path) {
+			return true
+		}
 	}
-	return nil
+	for _, download := range plan.downloads {
+		for _, torrent := range download.deleteBefore {
+			if torrent.CompletedBytes > 0 && sameDiskPath(torrent.SavePath, path) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func waitForSpaceCheck(ctx context.Context, interval time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if interval <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(interval)
+	select {
+	case <-ctx.Done():
+		timer.Stop()
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (e *Executor) addDownload(ctx context.Context, download preparedDownload) error {
