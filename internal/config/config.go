@@ -35,9 +35,10 @@ type Client struct {
 
 // Strategy contains TopFree strategy settings.
 type Strategy struct {
-	MaxDiskUsageBytes int64
-	MinFreeSpaceBytes int64
-	RefreshInterval   time.Duration
+	MaxDiskUsageBytes   int64
+	MaxTorrentSizeBytes int64
+	MinFreeSpaceBytes   int64
+	RefreshInterval     time.Duration
 }
 
 // Execution contains the write-safety policy.

@@ -114,6 +114,7 @@ func AssembleWithLogger(
 		qbitClient,
 		guardedExecutor,
 		configuration.Strategy.MaxDiskUsageBytes,
+		configuration.Strategy.MaxTorrentSizeBytes,
 		configuration.Strategy.MinFreeSpaceBytes,
 		configuration.Client.SavePath,
 	)

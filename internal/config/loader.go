@@ -55,9 +55,10 @@ type yamlClient struct {
 }
 
 type yamlStrategy struct {
-	MaxDiskUsageGiB int64  `yaml:"max_disk_usage_gib"`
-	MinFreeSpaceGiB int64  `yaml:"min_free_space_gib"`
-	RefreshInterval string `yaml:"refresh_interval"`
+	MaxDiskUsageGiB   int64  `yaml:"max_disk_usage_gib"`
+	MaxTorrentSizeGiB *int64 `yaml:"max_torrent_size_gib"`
+	MinFreeSpaceGiB   int64  `yaml:"min_free_space_gib"`
+	RefreshInterval   string `yaml:"refresh_interval"`
 }
 
 type yamlExecution struct {
@@ -160,6 +161,16 @@ func validate(raw yamlConfig) (Config, error) {
 	if raw.Strategy.MaxDiskUsageGiB > math.MaxInt64/gib {
 		return Config{}, fieldError("strategy.max_disk_usage_gib", "overflows bytes")
 	}
+	maxTorrentSizeBytes := int64(0)
+	if raw.Strategy.MaxTorrentSizeGiB != nil {
+		if *raw.Strategy.MaxTorrentSizeGiB <= 0 {
+			return Config{}, fieldError("strategy.max_torrent_size_gib", "must be positive when configured")
+		}
+		if *raw.Strategy.MaxTorrentSizeGiB > math.MaxInt64/gib {
+			return Config{}, fieldError("strategy.max_torrent_size_gib", "overflows bytes")
+		}
+		maxTorrentSizeBytes = *raw.Strategy.MaxTorrentSizeGiB * gib
+	}
 	if raw.Strategy.MinFreeSpaceGiB <= 0 {
 		return Config{}, fieldError("strategy.min_free_space_gib", "must be positive")
 	}
@@ -196,9 +207,10 @@ func validate(raw yamlConfig) (Config, error) {
 			SavePath: raw.Client.SavePath,
 		},
 		Strategy: Strategy{
-			MaxDiskUsageBytes: raw.Strategy.MaxDiskUsageGiB * gib,
-			MinFreeSpaceBytes: raw.Strategy.MinFreeSpaceGiB * gib,
-			RefreshInterval:   refreshInterval,
+			MaxDiskUsageBytes:   raw.Strategy.MaxDiskUsageGiB * gib,
+			MaxTorrentSizeBytes: maxTorrentSizeBytes,
+			MinFreeSpaceBytes:   raw.Strategy.MinFreeSpaceGiB * gib,
+			RefreshInterval:     refreshInterval,
 		},
 		Execution: Execution{Mode: executionMode},
 		Runtime: Runtime{

@@ -13,7 +13,7 @@ func TestDownloadQueueReconcilesTrackerAndClientSnapshots(t *testing.T) {
 	second := candidate(2, 20, 1, 1)
 	var queue downloadQueue
 
-	initial, err := queue.sync([]domain.Candidate{first, second}, nil)
+	initial, err := queue.sync([]domain.Candidate{first, second}, []domain.Candidate{first, second}, nil)
 	if err != nil {
 		t.Fatalf("initial sync error = %v", err)
 	}
@@ -22,7 +22,7 @@ func TestDownloadQueueReconcilesTrackerAndClientSnapshots(t *testing.T) {
 	}
 
 	queue.markSubmitted(first.Hash)
-	pending, err := queue.sync([]domain.Candidate{first, second}, nil)
+	pending, err := queue.sync([]domain.Candidate{first, second}, []domain.Candidate{first, second}, nil)
 	if err != nil {
 		t.Fatalf("pending sync error = %v", err)
 	}
@@ -34,7 +34,7 @@ func TestDownloadQueueReconcilesTrackerAndClientSnapshots(t *testing.T) {
 	downloading.CompletedBytes = 1
 	downloading.AmountLeftBytes = 9
 	downloading.State = "metaDL"
-	visible, err := queue.sync([]domain.Candidate{first, second}, []domain.ManagedTorrent{downloading})
+	visible, err := queue.sync([]domain.Candidate{first, second}, []domain.Candidate{first, second}, []domain.ManagedTorrent{downloading})
 	if err != nil {
 		t.Fatalf("visible sync error = %v", err)
 	}
@@ -45,7 +45,7 @@ func TestDownloadQueueReconcilesTrackerAndClientSnapshots(t *testing.T) {
 	downloading.CompletedBytes = downloading.SizeBytes
 	downloading.AmountLeftBytes = 0
 	downloading.State = "stalledUP"
-	completed, err := queue.sync([]domain.Candidate{first, second}, []domain.ManagedTorrent{downloading})
+	completed, err := queue.sync([]domain.Candidate{first, second}, []domain.Candidate{first, second}, []domain.ManagedTorrent{downloading})
 	if err != nil {
 		t.Fatalf("completed sync error = %v", err)
 	}
@@ -60,10 +60,10 @@ func TestDownloadQueueDropsTorrentNoLongerTopFree(t *testing.T) {
 	first := candidate(1, 10, 1, 1)
 	second := candidate(2, 20, 1, 1)
 	var queue downloadQueue
-	if _, err := queue.sync([]domain.Candidate{first, second}, nil); err != nil {
+	if _, err := queue.sync([]domain.Candidate{first, second}, []domain.Candidate{first, second}, nil); err != nil {
 		t.Fatalf("initial sync error = %v", err)
 	}
-	snapshot, err := queue.sync([]domain.Candidate{second}, nil)
+	snapshot, err := queue.sync([]domain.Candidate{second}, []domain.Candidate{second}, nil)
 	if err != nil {
 		t.Fatalf("second sync error = %v", err)
 	}

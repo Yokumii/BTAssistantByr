@@ -180,10 +180,11 @@ func buildPlan(
 	if err != nil {
 		return Plan{}, err
 	}
-	normalizedManaged, err := normalizeManaged(managed)
+	allNormalizedManaged, err := normalizeManaged(managed)
 	if err != nil {
 		return Plan{}, err
 	}
+	normalizedManaged := torrentsInManagementScope(allNormalizedManaged)
 
 	topFreeHashes := make(map[domain.TorrentHash]struct{}, len(normalizedCandidates))
 	for _, candidate := range normalizedCandidates {
@@ -194,8 +195,8 @@ func buildPlan(
 			return Plan{}, fmt.Errorf("%w: queued hash %s is not in current TopFree snapshot", ErrInvalidCandidate, candidate.Hash)
 		}
 	}
-	managedByHash := make(map[domain.TorrentHash]domain.ManagedTorrent, len(normalizedManaged))
-	for _, torrent := range normalizedManaged {
+	managedByHash := make(map[domain.TorrentHash]domain.ManagedTorrent, len(allNormalizedManaged))
+	for _, torrent := range allNormalizedManaged {
 		managedByHash[torrent.Hash] = torrent
 	}
 

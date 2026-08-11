@@ -28,6 +28,7 @@ client:
 
 strategy:
   max_disk_usage_gib: 500
+  max_torrent_size_gib: 100
   min_free_space_gib: 10
   refresh_interval: "121s"
 
@@ -57,7 +58,7 @@ func TestLoad(t *testing.T) {
 	if configuration.Client.BaseURL != "http://127.0.0.1:8080/webui/" || configuration.Client.Username != "qbt-user" || configuration.Client.Password != " client password " || configuration.Client.SavePath != "/downloads" {
 		t.Errorf("unexpected client configuration")
 	}
-	if configuration.Strategy.MaxDiskUsageBytes != 500*(1<<30) || configuration.Strategy.MinFreeSpaceBytes != 10*(1<<30) || configuration.Strategy.RefreshInterval != 121*time.Second {
+	if configuration.Strategy.MaxDiskUsageBytes != 500*(1<<30) || configuration.Strategy.MaxTorrentSizeBytes != 100*(1<<30) || configuration.Strategy.MinFreeSpaceBytes != 10*(1<<30) || configuration.Strategy.RefreshInterval != 121*time.Second {
 		t.Errorf("unexpected strategy configuration: %+v", configuration.Strategy)
 	}
 	if configuration.Execution.Mode != domain.ExecutionModeRequestApproval {
@@ -90,6 +91,9 @@ func TestLoadRejectsInvalidConfiguration(t *testing.T) {
 		{name: "missing client password", content: strings.Replace(validYAML, `password: " client password "`, `password: ""`, 1)},
 		{name: "zero disk limit", content: strings.Replace(validYAML, "max_disk_usage_gib: 500", "max_disk_usage_gib: 0", 1)},
 		{name: "disk limit overflow", content: strings.Replace(validYAML, "max_disk_usage_gib: 500", "max_disk_usage_gib: 8589934592", 1)},
+		{name: "zero torrent size limit", content: strings.Replace(validYAML, "max_torrent_size_gib: 100", "max_torrent_size_gib: 0", 1)},
+		{name: "negative torrent size limit", content: strings.Replace(validYAML, "max_torrent_size_gib: 100", "max_torrent_size_gib: -1", 1)},
+		{name: "torrent size limit overflow", content: strings.Replace(validYAML, "max_torrent_size_gib: 100", "max_torrent_size_gib: 8589934592", 1)},
 		{name: "zero free space reserve", content: strings.Replace(validYAML, "min_free_space_gib: 10", "min_free_space_gib: 0", 1)},
 		{name: "free space reserve overflow", content: strings.Replace(validYAML, "min_free_space_gib: 10", "min_free_space_gib: 8589934592", 1)},
 		{name: "invalid interval", content: strings.Replace(validYAML, `refresh_interval: "121s"`, `refresh_interval: "later"`, 1)},
@@ -134,12 +138,13 @@ func TestLoadAllowsEmptyOptionalFields(t *testing.T) {
 		`proxy_url: "socks5://127.0.0.1:10808"`, `proxy_url: ""`,
 		`cookie: " existing-cookie "`, `cookie: ""`,
 		`save_path: " /downloads "`, `save_path: ""`,
+		"  max_torrent_size_gib: 100\n", "",
 	).Replace(validYAML)
 	configuration, err := Load(writeConfig(t, content))
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if configuration.Tracker.ProxyURL != "" || configuration.Tracker.Cookie != "" || configuration.Client.SavePath != "" {
+	if configuration.Tracker.ProxyURL != "" || configuration.Tracker.Cookie != "" || configuration.Client.SavePath != "" || configuration.Strategy.MaxTorrentSizeBytes != 0 {
 		t.Errorf("optional fields were not empty")
 	}
 }

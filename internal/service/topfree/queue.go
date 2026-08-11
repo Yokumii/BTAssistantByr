@@ -15,8 +15,12 @@ type queueSnapshot struct {
 	downloadBlocked bool
 }
 
-func (q *downloadQueue) sync(candidates []domain.Candidate, managed []domain.ManagedTorrent) (queueSnapshot, error) {
-	normalizedCandidates, err := normalizeCandidates(candidates)
+func (q *downloadQueue) sync(currentCandidates, eligibleCandidates []domain.Candidate, managed []domain.ManagedTorrent) (queueSnapshot, error) {
+	normalizedCandidates, err := normalizeCandidates(currentCandidates)
+	if err != nil {
+		return queueSnapshot{}, err
+	}
+	normalizedEligible, err := normalizeCandidates(eligibleCandidates)
 	if err != nil {
 		return queueSnapshot{}, err
 	}
@@ -28,6 +32,13 @@ func (q *downloadQueue) sync(candidates []domain.Candidate, managed []domain.Man
 	current := make(map[domain.TorrentHash]domain.Candidate, len(normalizedCandidates))
 	for _, candidate := range normalizedCandidates {
 		current[candidate.Hash] = candidate
+	}
+	eligible := make(map[domain.TorrentHash]domain.Candidate, len(normalizedEligible))
+	for _, candidate := range normalizedEligible {
+		if _, exists := current[candidate.Hash]; !exists {
+			return queueSnapshot{}, ErrInvalidCandidate
+		}
+		eligible[candidate.Hash] = candidate
 	}
 	managedByHash := make(map[domain.TorrentHash]domain.ManagedTorrent, len(normalizedManaged))
 	for _, torrent := range normalizedManaged {
@@ -49,19 +60,21 @@ func (q *downloadQueue) sync(candidates []domain.Candidate, managed []domain.Man
 	}
 	sortHashes(removed)
 
-	q.entries = make(map[domain.TorrentHash]domain.Candidate, len(current))
+	q.entries = make(map[domain.TorrentHash]domain.Candidate, len(eligible))
 	downloadBlocked := q.pending != ""
-	for hash, candidate := range current {
+	for hash := range current {
 		if hash == q.pending {
 			continue
 		}
 		if torrent, exists := managedByHash[hash]; exists {
-			if isIncomplete(torrent) {
+			if tagsInManagementScope(torrent.Tags) && isIncomplete(torrent) {
 				downloadBlocked = true
 			}
 			continue
 		}
-		q.entries[hash] = candidate
+		if candidate, allowed := eligible[hash]; allowed {
+			q.entries[hash] = candidate
+		}
 	}
 
 	queued := make([]domain.Candidate, 0, len(q.entries))

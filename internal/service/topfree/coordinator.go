@@ -16,6 +16,8 @@ var (
 	ErrManagedSourceRequired = errors.New("TopFree managed torrent source is required")
 	// ErrPlanExecutorRequired indicates that no plan executor was supplied.
 	ErrPlanExecutorRequired = errors.New("TopFree plan executor is required")
+	// ErrInvalidTorrentSizeLimit indicates that the optional per-torrent limit is negative.
+	ErrInvalidTorrentSizeLimit = errors.New("TopFree maximum torrent size must not be negative")
 )
 
 // ManagedTorrentSource supplies the complete qBittorrent snapshot used for safe planning.
@@ -31,14 +33,15 @@ type PlanExecutor interface {
 
 // Coordinator connects one TopFree snapshot to planning and explicit execution.
 type Coordinator struct {
-	managedSource     ManagedTorrentSource
-	executor          PlanExecutor
-	maxDiskUsageBytes int64
-	minFreeSpaceBytes int64
-	savePath          string
-	logger            *slog.Logger
-	queue             downloadQueue
-	now               func() time.Time
+	managedSource       ManagedTorrentSource
+	executor            PlanExecutor
+	maxDiskUsageBytes   int64
+	maxTorrentSizeBytes int64
+	minFreeSpaceBytes   int64
+	savePath            string
+	logger              *slog.Logger
+	queue               downloadQueue
+	now                 func() time.Time
 }
 
 // SetLogger enables structured planning logs. It must be called before RunOnce.
@@ -51,6 +54,7 @@ func NewCoordinator(
 	managedSource ManagedTorrentSource,
 	executor PlanExecutor,
 	maxDiskUsageBytes int64,
+	maxTorrentSizeBytes int64,
 	minFreeSpaceBytes int64,
 	savePath string,
 ) (*Coordinator, error) {
@@ -63,16 +67,20 @@ func NewCoordinator(
 	if maxDiskUsageBytes <= 0 {
 		return nil, ErrInvalidDiskLimit
 	}
+	if maxTorrentSizeBytes < 0 {
+		return nil, ErrInvalidTorrentSizeLimit
+	}
 	if minFreeSpaceBytes <= 0 {
 		return nil, ErrInvalidFreeSpaceReserve
 	}
 	return &Coordinator{
-		managedSource:     managedSource,
-		executor:          executor,
-		maxDiskUsageBytes: maxDiskUsageBytes,
-		minFreeSpaceBytes: minFreeSpaceBytes,
-		savePath:          strings.TrimSpace(savePath),
-		now:               time.Now,
+		managedSource:       managedSource,
+		executor:            executor,
+		maxDiskUsageBytes:   maxDiskUsageBytes,
+		maxTorrentSizeBytes: maxTorrentSizeBytes,
+		minFreeSpaceBytes:   minFreeSpaceBytes,
+		savePath:            strings.TrimSpace(savePath),
+		now:                 time.Now,
 	}, nil
 }
 
@@ -104,7 +112,25 @@ func (c *Coordinator) RunOnce(ctx context.Context, candidates []domain.Candidate
 	if c.logger != nil {
 		c.logger.DebugContext(ctx, "qBittorrent snapshot loaded", "torrents", len(managed))
 	}
-	queue, err := c.queue.sync(candidates, managed)
+	eligibleCandidates, oversizedCandidates, err := candidatesWithinSizeLimit(candidates, c.maxTorrentSizeBytes)
+	if err != nil {
+		return Plan{}, fmt.Errorf("apply TopFree torrent size limit: %w", err)
+	}
+	manageable := torrentsInManagementScope(managed)
+	if c.logger != nil {
+		if len(oversizedCandidates) > 0 {
+			c.logger.InfoContext(ctx, "excluded oversized TopFree torrents from download queue",
+				"excluded", len(oversizedCandidates),
+				"max_torrent_size_bytes", c.maxTorrentSizeBytes,
+			)
+			c.logger.DebugContext(ctx, "oversized TopFree torrent details", "candidates", oversizedCandidates)
+		}
+		c.logger.DebugContext(ctx, "qBittorrent management scope applied",
+			"in_scope", len(manageable),
+			"out_of_scope", len(managed)-len(manageable),
+		)
+	}
+	queue, err := c.queue.sync(candidates, eligibleCandidates, managed)
 	if err != nil {
 		return Plan{}, fmt.Errorf("reconcile TopFree download queue: %w", err)
 	}

@@ -69,7 +69,7 @@ go run ./cmd/btassistantbyr -config config/config.yaml
 
 本地配置应由 `config/config.example.yaml` 复制为 `config/config.yaml`。真实配置和运行数据均已加入 `.gitignore`，不要提交账号、密码、Cookie 或 passkey。
 
-配置加载不会填充隐式默认值，并且只接受一个不超过 1 MiB 的 YAML 文档。未知字段、缺少必填项、非法 URL、非正数容量、无法解析的轮询间隔、未知执行模式或日志选项都会让启动显式失败。`strategy.max_disk_usage_gib` 和 `strategy.min_free_space_gib` 使用 GiB，后者是每轮下载完成后必须保留的真实磁盘可用空间；`strategy.refresh_interval` 使用 Go duration 格式，例如 `121s` 或 `2m`。`tracker.proxy_url`、`tracker.cookie` 和 `client.save_path` 可以留空。
+配置加载不会填充隐式默认值，并且只接受一个不超过 1 MiB 的 YAML 文档。未知字段、缺少必填项、非法 URL、非正数容量、无法解析的轮询间隔、未知执行模式或日志选项都会让启动显式失败。`strategy.max_disk_usage_gib`、`strategy.max_torrent_size_gib` 和 `strategy.min_free_space_gib` 使用 GiB，后者是每轮下载完成后必须保留的真实磁盘可用空间；`strategy.refresh_interval` 使用 Go duration 格式，例如 `121s` 或 `2m`。`tracker.proxy_url`、`tracker.cookie` 和 `client.save_path` 可以留空，`strategy.max_torrent_size_gib` 可以省略。
 
 磁盘安全配置示例：
 
@@ -79,12 +79,17 @@ client:
 
 strategy:
   max_disk_usage_gib: 500
+  max_torrent_size_gib: 100
   min_free_space_gib: 10
 ```
+
+`strategy.max_torrent_size_gib` 是可选的单种大小上限。省略时不限制；配置后必须是正整数。大小严格超过上限的 TopFree 不会进入待下载队列，等于上限时仍允许下载。该限制只阻止新增，不会因为修改配置而删除仍然 TopFree 的已有任务。
 
 `client.save_path` 留空时，程序从 qBittorrent 读取默认下载路径。每轮严格执行“检测真实可用空间 → 生成策略 → 删除策略允许回收的旧 TopFree 文件 → 再次检测真实可用空间 → 添加队首下载”的流程。下载前要求实际可用空间至少覆盖队首种子的大小和 `min_free_space_gib` 安全余量；检测失败、路径变化、空间不足或删除后空间未按预期释放时都会停止，且不会发送下载请求。
 
 当前网页快照内所有尚未存在于 qBittorrent 的 TopFree 都会进入内存待下载队列。调度器每轮最多添加一个队首任务；只要 qBittorrent 中已有未完成的当前 TopFree，就不会添加下一项。队首按“种子大小 ÷ 剩余 Free 时间”从小到大选择，当前任务完成后，下一轮才会继续。每轮会用最新网页和 qBittorrent 全量快照重建队列，因此程序重启后仍能识别正在下载的任务。升级前若已存在多个仍然 TopFree 的未完成任务，程序只会阻止继续新增，不会擅自删除有效任务。候选不再 TopFree 时会立即出队；若带 `sc` 标签的任务已经开始但尚未完成，则本轮计划会先停止任务，再从 qBittorrent 删除种子及已下载文件。所有这些删除仍受 `execution.mode` 控制。
+
+qBittorrent 管理范围采用严格标签白名单：无标签、仅 `sc`、仅 `toDel`、以及同时带 `sc` 和 `toDel` 的种子可以参与策略。只要包含任何其他标签，即使同时带有 `sc` 或 `toDel`，该种子也完全排除在打标、容量统计、队列并发阻塞、失效清理和删除范围之外。程序仍会识别其 Hash，避免重复添加同一个种子。
 
 qBittorrent WebAPI 2.15.2 及以上可按任意 `client.save_path` 查询空间。较早的 5.x 版本只公开默认下载盘空间，因此仅在 `save_path` 留空或与 qBittorrent 默认路径一致时安全回退；旧 API 配置其他路径会显式报错，不会使用运行本程序的宿主机空间代替。
 
@@ -148,6 +153,8 @@ runtime:
 - 支持新增 URL 种子、添加标签、重新汇报、停止和删除操作；停止操作使用 qBittorrent 5.x 的 `/api/v2/torrents/stop`
 - 支持移除指定 qBittorrent 标签，用于撤销重新成为 TopFree 种子的 `toDel` 状态
 - 纯计算 TopFree 标签同步、失效标记、按容量回收、单并发下载队列、大小/剩余 Free 时间优先级和空间不足跳过计划
+- 支持可选的单种大小上限，超出限制的候选不会进入下载队列
+- 仅管理无标签或只带 `sc`/`toDel` 的种子，包含其他标签的种子不会被修改、计入策略容量或阻塞程序队列
 - 每轮按最新 TopFree 快照剔除失效候选；已开始但未完成的失效 `sc` 任务会停止并连同已下载内容删除
 - 容量规划只允许回收带 `sc` 标签且已不再 TopFree 的种子，当前 TopFree 和其他来源的 `toDel` 种子不会进入删除计划
 - 显式执行已校验的计划；任何写入前先预取队首下载 URL 并复核空间，清理完成且空间复检通过后才添加队首任务，并在首个错误处停止

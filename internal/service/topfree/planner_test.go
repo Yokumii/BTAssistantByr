@@ -122,6 +122,25 @@ func TestBuildPlanIgnoresUnmanagedDeleteTag(t *testing.T) {
 	}
 }
 
+func TestBuildPlanExcludesTorrentsWithManualTags(t *testing.T) {
+	t.Parallel()
+
+	existing := candidate(1, 90, 1, 1)
+	next := candidate(2, 20, 1, 1)
+	manualCurrent := managedTorrent(1, 90, 1, "keep")
+	manualStale := managedTorrent(9, 100, 2, ManagedTag, "keep")
+	plan, err := BuildPlan(100, []domain.Candidate{existing, next}, []domain.ManagedTorrent{manualCurrent, manualStale})
+	if err != nil {
+		t.Fatalf("BuildPlan() error = %v", err)
+	}
+	if len(plan.TagAsManaged) != 0 || len(plan.MarkForDeletion) != 0 || len(plan.RemoveExpired) != 0 || plan.CurrentDiskUsageBytes != 0 {
+		t.Fatalf("manual-tagged torrents entered plan: %+v", plan)
+	}
+	if len(plan.Downloads) != 1 || plan.Downloads[0].Candidate.Hash != next.Hash {
+		t.Fatalf("Downloads = %+v, want only absent candidate", plan.Downloads)
+	}
+}
+
 func TestBuildPlanOrdersCandidatesByPeerDemand(t *testing.T) {
 	t.Parallel()
 
