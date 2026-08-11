@@ -214,7 +214,9 @@ func buildPlan(
 		_, isTopFree := topFreeHashes[torrent.Hash]
 		isManaged := hasTag(torrent.Tags, ManagedTag)
 		isDeleteTagged := hasTag(torrent.Tags, DeleteTag)
-		if !isManaged && !isTopFree {
+		// A standalone toDel tag is an explicit user authorization to reclaim the torrent.
+		isOwned := isManaged || isDeleteTagged
+		if !isOwned && !isTopFree {
 			continue
 		}
 		if torrent.SizeBytes > math.MaxInt64-plan.CurrentDiskUsageBytes {
@@ -231,7 +233,7 @@ func buildPlan(
 			}
 			continue
 		}
-		if options.removeExpired && isIncomplete(torrent) {
+		if options.removeExpired && isManaged && isIncomplete(torrent) {
 			plan.RemoveExpired = append(plan.RemoveExpired, torrent)
 			continue
 		}
@@ -276,7 +278,7 @@ func buildPlan(
 			plan.Skipped = append(plan.Skipped, SkippedCandidate{Candidate: candidate, Reason: SkipFreePeriodExpired})
 			continue
 		}
-		deleteCount, freed, physicalFreed, fits := cleanupPrefix(
+		selected, remaining, freed, physicalFreed, fits := selectCleanup(
 			maxDiskUsageBytes,
 			usage,
 			candidate.SizeBytes,
@@ -294,11 +296,11 @@ func buildPlan(
 		}
 
 		download := DownloadPlan{Candidate: candidate}
-		for index := 0; index < deleteCount; index++ {
-			download.DeleteBefore = append(download.DeleteBefore, remainingStale[index])
-			deleted[remainingStale[index].Hash] = struct{}{}
+		for _, torrent := range selected {
+			download.DeleteBefore = append(download.DeleteBefore, torrent)
+			deleted[torrent.Hash] = struct{}{}
 		}
-		remainingStale = remainingStale[deleteCount:]
+		remainingStale = remaining
 		usage = usage - freed + candidate.SizeBytes
 		if disk != nil {
 			physicalFreeBytes = saturatingAdd(physicalFreeBytes, physicalFreed) - candidate.SizeBytes
@@ -436,31 +438,67 @@ func availableAfterCleanup(maximum, usage, reclaimable int64) int64 {
 	return maximum - minimumUsage
 }
 
-func cleanupPrefix(
+func selectCleanup(
 	maximum int64,
 	usage int64,
 	candidateSize int64,
 	physicalFreeBytes int64,
 	stale []domain.ManagedTorrent,
 	disk *diskCapacity,
-) (deleteCount int, freed int64, physicalFreed int64, fits bool) {
+) (selected []domain.ManagedTorrent, remaining []domain.ManagedTorrent, freed int64, physicalFreed int64, fits bool) {
+	deleteCount := 0
 	for {
-		logicalUsage := usage - freed
-		logicalFits := candidateSize <= maximum && logicalUsage <= maximum-candidateSize
-		physicalFits := disk == nil || hasReservedCapacity(saturatingAdd(physicalFreeBytes, physicalFreed), disk.reserve, candidateSize)
-		if logicalFits && physicalFits {
-			return deleteCount, freed, physicalFreed, true
+		if cleanupFits(maximum, usage, candidateSize, physicalFreeBytes, freed, physicalFreed, disk) {
+			break
 		}
 		if deleteCount == len(stale) {
-			return 0, 0, 0, false
+			return nil, stale, 0, 0, false
 		}
 		torrent := stale[deleteCount]
 		freed += torrent.SizeBytes
-		if disk != nil && sameDiskPath(torrent.SavePath, disk.path) {
-			physicalFreed += torrent.CompletedBytes
-		}
+		physicalFreed += physicallyReleasable(torrent, disk)
 		deleteCount++
 	}
+
+	selectedFlags := make([]bool, deleteCount)
+	for index := range selectedFlags {
+		selectedFlags[index] = true
+	}
+	for index := deleteCount - 1; index >= 0; index-- {
+		torrent := stale[index]
+		trialFreed := freed - torrent.SizeBytes
+		trialPhysicalFreed := physicalFreed - physicallyReleasable(torrent, disk)
+		if cleanupFits(maximum, usage, candidateSize, physicalFreeBytes, trialFreed, trialPhysicalFreed, disk) {
+			selectedFlags[index] = false
+			freed = trialFreed
+			physicalFreed = trialPhysicalFreed
+		}
+	}
+
+	selected = make([]domain.ManagedTorrent, 0, deleteCount)
+	remaining = make([]domain.ManagedTorrent, 0, len(stale))
+	for index, torrent := range stale {
+		if index < deleteCount && selectedFlags[index] {
+			selected = append(selected, torrent)
+			continue
+		}
+		remaining = append(remaining, torrent)
+	}
+	return selected, remaining, freed, physicalFreed, true
+}
+
+func cleanupFits(maximum, usage, candidateSize, physicalFreeBytes, freed, physicalFreed int64, disk *diskCapacity) bool {
+	logicalUsage := usage - freed
+	logicalFits := candidateSize <= maximum && logicalUsage <= maximum-candidateSize
+	physicalFits := disk == nil || hasReservedCapacity(saturatingAdd(physicalFreeBytes, physicalFreed), disk.reserve, candidateSize)
+	return logicalFits && physicalFits
+}
+
+func physicallyReleasable(torrent domain.ManagedTorrent, disk *diskCapacity) int64 {
+	if disk != nil && sameDiskPath(torrent.SavePath, disk.path) {
+		return torrent.CompletedBytes
+	}
+	return 0
 }
 
 func availableAfterAllCleanup(maximum, usage, physicalFreeBytes int64, stale []domain.ManagedTorrent, disk *diskCapacity) int64 {

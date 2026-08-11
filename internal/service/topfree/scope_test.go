@@ -42,6 +42,7 @@ func TestTagsInManagementScope(t *testing.T) {
 		{name: "blank entries", tags: []string{" ", ManagedTag}, want: true},
 		{name: "manual tag", tags: []string{"keep"}},
 		{name: "program and manual tags", tags: []string{ManagedTag, "keep"}},
+		{name: "authorized deletion and manual tags", tags: []string{DeleteTag, "keep"}},
 	}
 	for _, test := range tests {
 		test := test

@@ -30,7 +30,7 @@ func TestBuildPlanSynchronizesTagsAndAddsNewCandidate(t *testing.T) {
 		managedTorrent(5, 400, 4, DeleteTag),
 	}
 
-	plan, err := BuildPlan(1000, candidates, managed)
+	plan, err := BuildPlan(1400, candidates, managed)
 	if err != nil {
 		t.Fatalf("BuildPlan() error = %v", err)
 	}
@@ -43,12 +43,12 @@ func TestBuildPlanSynchronizesTagsAndAddsNewCandidate(t *testing.T) {
 	if len(plan.Skipped) != 0 {
 		t.Errorf("Skipped = %+v", plan.Skipped)
 	}
-	if plan.CurrentDiskUsageBytes != 600 || plan.ProjectedDiskUsageBytes != 700 {
-		t.Errorf("disk usage = (%d, %d), want (600, 700)", plan.CurrentDiskUsageBytes, plan.ProjectedDiskUsageBytes)
+	if plan.CurrentDiskUsageBytes != 1000 || plan.ProjectedDiskUsageBytes != 1100 {
+		t.Errorf("disk usage = (%d, %d), want (1000, 1100)", plan.CurrentDiskUsageBytes, plan.ProjectedDiskUsageBytes)
 	}
 }
 
-func TestBuildPlanDeletesOldestPrefixBeforeDownload(t *testing.T) {
+func TestBuildPlanRollsBackUnnecessaryPrefixDeletion(t *testing.T) {
 	t.Parallel()
 
 	candidates := []domain.Candidate{
@@ -69,14 +69,12 @@ func TestBuildPlanDeletesOldestPrefixBeforeDownload(t *testing.T) {
 		t.Fatalf("len(Downloads) = %d, want 1", len(plan.Downloads))
 	}
 	deletions := plan.Downloads[0].DeleteBefore
-	if len(deletions) != 2 || deletions[0].Hash != torrentHash(4) || deletions[1].Hash != torrentHash(5) {
+	if len(deletions) != 1 || deletions[0].Hash != torrentHash(5) {
 		t.Errorf("DeleteBefore = %+v", deletions)
 	}
-	if len(plan.MarkForDeletion) != 0 {
-		t.Errorf("deleted torrents were also marked: %v", plan.MarkForDeletion)
-	}
-	if plan.CurrentDiskUsageBytes != 90 || plan.ProjectedDiskUsageBytes != 80 {
-		t.Errorf("disk usage = (%d, %d), want (90, 80)", plan.CurrentDiskUsageBytes, plan.ProjectedDiskUsageBytes)
+	assertHashes(t, plan.MarkForDeletion, torrentHash(4))
+	if plan.CurrentDiskUsageBytes != 90 || plan.ProjectedDiskUsageBytes != 100 {
+		t.Errorf("disk usage = (%d, %d), want (90, 100)", plan.CurrentDiskUsageBytes, plan.ProjectedDiskUsageBytes)
 	}
 }
 
@@ -100,25 +98,59 @@ func TestBuildPlanNeverDeletesCurrentTopFree(t *testing.T) {
 	}
 }
 
-func TestBuildPlanIgnoresUnmanagedDeleteTag(t *testing.T) {
+func TestBuildPlanTreatsDeleteTagAsExplicitDeletionAuthorization(t *testing.T) {
 	t.Parallel()
 
 	plan, err := BuildPlan(
 		100,
-		[]domain.Candidate{candidate(1, 90, 1, 1), candidate(2, 20, 1, 1)},
+		[]domain.Candidate{candidate(1, 80, 1, 1), candidate(2, 20, 1, 1)},
 		[]domain.ManagedTorrent{
-			managedTorrent(1, 90, 1, ManagedTag),
+			managedTorrent(1, 80, 1, ManagedTag),
 			managedTorrent(9, 100, 2, DeleteTag),
 		},
 	)
 	if err != nil {
 		t.Fatalf("BuildPlan() error = %v", err)
 	}
-	if len(plan.Downloads) != 0 || len(plan.Skipped) != 1 {
-		t.Fatalf("unexpected capacity decision: %+v", plan)
+	if len(plan.Downloads) != 1 || len(plan.Downloads[0].DeleteBefore) != 1 || plan.Downloads[0].DeleteBefore[0].Hash != torrentHash(9) {
+		t.Fatalf("toDel-only torrent was not reclaimed: %+v", plan)
 	}
-	if plan.CurrentDiskUsageBytes != 90 || plan.Skipped[0].AvailableBytes != 10 {
-		t.Errorf("unmanaged torrent affected capacity: %+v", plan)
+	if plan.CurrentDiskUsageBytes != 180 || plan.ProjectedDiskUsageBytes != 100 || len(plan.MarkForDeletion) != 0 {
+		t.Errorf("unexpected authorized deletion plan: %+v", plan)
+	}
+}
+
+func TestBuildPlanKeepsAuthorizedToDelTorrentWhenCapacityAlreadyFits(t *testing.T) {
+	t.Parallel()
+
+	authorized := managedTorrent(9, 90, 1, DeleteTag)
+	plan, err := BuildPlan(200, []domain.Candidate{candidate(1, 20, 1, 1)}, []domain.ManagedTorrent{authorized})
+	if err != nil {
+		t.Fatalf("BuildPlan() error = %v", err)
+	}
+	if len(plan.Downloads) != 1 || len(plan.Downloads[0].DeleteBefore) != 0 {
+		t.Fatalf("authorized torrent was deleted without capacity pressure: %+v", plan)
+	}
+}
+
+func TestBuildPlanMatchesLegacyReverseRollbackSelection(t *testing.T) {
+	t.Parallel()
+
+	stale := []domain.ManagedTorrent{
+		managedTorrent(4, 1, 1, ManagedTag),
+		managedTorrent(5, 2, 2, ManagedTag),
+		managedTorrent(6, 7, 3, ManagedTag),
+	}
+	plan, err := BuildPlan(10, []domain.Candidate{candidate(1, 8, 1, 1)}, stale)
+	if err != nil {
+		t.Fatalf("BuildPlan() error = %v", err)
+	}
+	if len(plan.Downloads) != 1 {
+		t.Fatalf("Downloads = %+v", plan.Downloads)
+	}
+	deletions := plan.Downloads[0].DeleteBefore
+	if len(deletions) != 2 || deletions[0].Hash != torrentHash(4) || deletions[1].Hash != torrentHash(6) {
+		t.Fatalf("DeleteBefore = %+v, want legacy rollback selection [1, 7]", deletions)
 	}
 }
 
@@ -252,6 +284,69 @@ func TestBuildPlanWithDiskSpaceCountsOnlyDownloadedBytesAsReleasable(t *testing.
 	}
 	if len(plan.Downloads) != 0 || len(plan.Skipped) != 1 || plan.Skipped[0].AvailableBytes != 30 {
 		t.Fatalf("partial cleanup was overestimated: %+v", plan)
+	}
+}
+
+func TestBuildPlanReverseRollbackPreservesBothCapacityConstraints(t *testing.T) {
+	t.Parallel()
+
+	stale := []domain.ManagedTorrent{
+		managedTorrent(4, 1, 1, ManagedTag),
+		managedTorrent(5, 2, 2, ManagedTag),
+		managedTorrent(6, 7, 3, ManagedTag),
+	}
+	for index := range stale {
+		stale[index].SavePath = "/downloads"
+	}
+	plan, err := BuildPlanWithDiskSpace(
+		1000,
+		domain.DiskSpace{Path: "/downloads", FreeBytes: 10},
+		10,
+		[]domain.Candidate{candidate(1, 8, 1, 1)},
+		stale,
+	)
+	if err != nil {
+		t.Fatalf("BuildPlanWithDiskSpace() error = %v", err)
+	}
+	if len(plan.Downloads) != 1 {
+		t.Fatalf("Downloads = %+v", plan.Downloads)
+	}
+	deletions := plan.Downloads[0].DeleteBefore
+	if len(deletions) != 2 || deletions[0].Hash != torrentHash(4) || deletions[1].Hash != torrentHash(6) {
+		t.Fatalf("DeleteBefore = %+v, want physical-space rollback selection [1, 7]", deletions)
+	}
+	if plan.ProjectedFreeSpaceBytes != 10 {
+		t.Fatalf("ProjectedFreeSpaceBytes = %d, want 10", plan.ProjectedFreeSpaceBytes)
+	}
+}
+
+func TestBuildQueuedPlanReclaimsIncompleteToDelOnlyTorrentOnDemand(t *testing.T) {
+	t.Parallel()
+
+	authorized := managedTorrent(9, 90, 1, DeleteTag)
+	authorized.CompletedBytes = 30
+	authorized.AmountLeftBytes = 60
+	authorized.State = "stoppedDL"
+	authorized.SavePath = "/downloads"
+	next := candidate(1, 20, 1, 1)
+	plan, err := BuildQueuedPlanWithDiskSpace(
+		100,
+		domain.DiskSpace{Path: "/downloads", FreeBytes: 100},
+		10,
+		fixtureTime,
+		[]domain.Candidate{next},
+		[]domain.Candidate{next},
+		[]domain.ManagedTorrent{authorized},
+		false,
+	)
+	if err != nil {
+		t.Fatalf("BuildQueuedPlanWithDiskSpace() error = %v", err)
+	}
+	if len(plan.RemoveExpired) != 0 {
+		t.Fatalf("toDel-only torrent was treated as expired sc download: %+v", plan.RemoveExpired)
+	}
+	if len(plan.Downloads) != 1 || len(plan.Downloads[0].DeleteBefore) != 1 || plan.Downloads[0].DeleteBefore[0].Hash != authorized.Hash {
+		t.Fatalf("authorized cleanup plan = %+v", plan)
 	}
 }
 
