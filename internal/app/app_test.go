@@ -153,11 +153,13 @@ func (fixture *lifecycleFixture) configuration(mode domain.ExecutionMode, withBY
 			SavePath: "/downloads",
 		},
 		Strategy: config.Strategy{
-			MaxDiskUsageBytes: 10 * (1 << 30),
-			MinFreeSpaceBytes: 10 * (1 << 30),
-			RefreshInterval:   time.Hour,
+			MaxDiskUsageBytes:  10 * (1 << 30),
+			MinFreeSpaceBytes:  10 * (1 << 30),
+			RefreshInterval:    time.Hour,
+			QueueCheckInterval: time.Hour,
 		},
 		Execution: config.Execution{Mode: mode},
+		Runtime:   config.Runtime{NetworkRetryCount: 0},
 	}
 }
 

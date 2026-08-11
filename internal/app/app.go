@@ -12,6 +12,7 @@ import (
 	"github.com/Yokumii/BTAssistantByr/internal/adapter/qbittorrent"
 	"github.com/Yokumii/BTAssistantByr/internal/config"
 	"github.com/Yokumii/BTAssistantByr/internal/domain"
+	"github.com/Yokumii/BTAssistantByr/internal/netretry"
 	"github.com/Yokumii/BTAssistantByr/internal/service/topfree"
 )
 
@@ -45,6 +46,11 @@ func AssembleWithLogger(
 	}
 	rootLogger := usableLogger(logger)
 	logger = rootLogger.With("component", "app")
+	retryPolicy := netretry.Policy{
+		Retries: configuration.Runtime.NetworkRetryCount,
+		Delay:   time.Second,
+		Logger:  rootLogger.With("component", "network_retry"),
+	}
 	logger.DebugContext(ctx, "assembling application",
 		"tracker_base_url", configuration.Tracker.BaseURL,
 		"tracker_proxy_enabled", configuration.Tracker.ProxyURL != "",
@@ -52,6 +58,9 @@ func AssembleWithLogger(
 		"qbit_base_url", configuration.Client.BaseURL,
 		"save_path", configuration.Client.SavePath,
 		"execution_mode", configuration.Execution.Mode,
+		"refresh_interval", configuration.Strategy.RefreshInterval,
+		"queue_check_interval", configuration.Strategy.QueueCheckInterval,
+		"network_retry_count", configuration.Runtime.NetworkRetryCount,
 	)
 	approver, err := executionApprover(configuration.Execution.Mode, approvalInput, approvalOutput)
 	if err != nil {
@@ -69,7 +78,9 @@ func AssembleWithLogger(
 	logger.DebugContext(ctx, "BYR authenticator created", "proxy_enabled", configuration.Tracker.ProxyURL != "")
 	byrStarted := time.Now()
 	logger.DebugContext(ctx, "establishing BYR session", "reuse_auth_token", configuration.Tracker.Cookie != "")
-	byrCredential, err := authenticateBYR(ctx, byrAuthenticator, configuration.Tracker)
+	byrCredential, err := netretry.DoValue(ctx, retryPolicy, "authenticate BYR", func() (byr.Credential, error) {
+		return authenticateBYR(ctx, byrAuthenticator, configuration.Tracker)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -86,11 +97,13 @@ func AssembleWithLogger(
 	logger.DebugContext(ctx, "qBittorrent authenticator created")
 	qbitStarted := time.Now()
 	logger.DebugContext(ctx, "authenticating qBittorrent")
-	qbitCredential, err := qbitAuthenticator.Login(
-		ctx,
-		configuration.Client.Username,
-		configuration.Client.Password,
-	)
+	qbitCredential, err := netretry.DoValue(ctx, retryPolicy, "authenticate qBittorrent", func() (qbittorrent.Credential, error) {
+		return qbitAuthenticator.Login(
+			ctx,
+			configuration.Client.Username,
+			configuration.Client.Password,
+		)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("authenticate qBittorrent: %w", err)
 	}
@@ -99,8 +112,10 @@ func AssembleWithLogger(
 	if err != nil {
 		return nil, fmt.Errorf("create qBittorrent client: %w", err)
 	}
+	retryingTracker := netretry.NewTracker(byrClient, retryPolicy)
+	retryingTorrentClient := netretry.NewTorrentClient(qbitClient, retryPolicy)
 
-	executor, err := topfree.NewExecutor(byrClient, qbitClient, configuration.Client.SavePath, configuration.Strategy.MinFreeSpaceBytes)
+	executor, err := topfree.NewExecutor(retryingTracker, retryingTorrentClient, configuration.Client.SavePath, configuration.Strategy.MinFreeSpaceBytes)
 	if err != nil {
 		return nil, fmt.Errorf("create TopFree executor: %w", err)
 	}
@@ -111,7 +126,7 @@ func AssembleWithLogger(
 	}
 	guardedExecutor.SetLogger(rootLogger.With("component", "execution_policy"))
 	coordinator, err := topfree.NewCoordinator(
-		qbitClient,
+		retryingTorrentClient,
 		guardedExecutor,
 		configuration.Strategy.MaxDiskUsageBytes,
 		configuration.Strategy.MaxTorrentSizeBytes,
@@ -122,7 +137,7 @@ func AssembleWithLogger(
 		return nil, fmt.Errorf("create TopFree coordinator: %w", err)
 	}
 	coordinator.SetLogger(rootLogger.With("component", "topfree_coordinator"))
-	poller, err := topfree.NewPoller(byrClient, configuration.Strategy.RefreshInterval)
+	poller, err := topfree.NewPoller(retryingTracker, configuration.Strategy.RefreshInterval, configuration.Strategy.QueueCheckInterval)
 	if err != nil {
 		return nil, fmt.Errorf("create TopFree poller: %w", err)
 	}
@@ -132,7 +147,7 @@ func AssembleWithLogger(
 	return &Application{poller: poller, handler: coordinator.Handle, logger: logger}, nil
 }
 
-// Run polls immediately and then at the configured interval until failure or cancellation.
+// Run refreshes tracker state and checks the queue until a non-network failure or cancellation.
 func (application *Application) Run(ctx context.Context) error {
 	application.logger.InfoContext(ctx, "BTAssistantByr started; press Ctrl+C to stop")
 	err := application.poller.Run(ctx, application.handler)

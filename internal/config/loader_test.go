@@ -31,6 +31,7 @@ strategy:
   max_torrent_size_gib: 100
   min_free_space_gib: 10
   refresh_interval: "121s"
+  queue_check_interval: "10s"
 
 execution:
   mode: " REQUEST_APPROVAL "
@@ -40,6 +41,7 @@ runtime:
   log_dir: " logs "
   log_level: " DEBUG "
   log_color: " AUTO "
+  network_retry_count: 3
 `
 
 func TestLoad(t *testing.T) {
@@ -58,13 +60,13 @@ func TestLoad(t *testing.T) {
 	if configuration.Client.BaseURL != "http://127.0.0.1:8080/webui/" || configuration.Client.Username != "qbt-user" || configuration.Client.Password != " client password " || configuration.Client.SavePath != "/downloads" {
 		t.Errorf("unexpected client configuration")
 	}
-	if configuration.Strategy.MaxDiskUsageBytes != 500*(1<<30) || configuration.Strategy.MaxTorrentSizeBytes != 100*(1<<30) || configuration.Strategy.MinFreeSpaceBytes != 10*(1<<30) || configuration.Strategy.RefreshInterval != 121*time.Second {
+	if configuration.Strategy.MaxDiskUsageBytes != 500*(1<<30) || configuration.Strategy.MaxTorrentSizeBytes != 100*(1<<30) || configuration.Strategy.MinFreeSpaceBytes != 10*(1<<30) || configuration.Strategy.RefreshInterval != 121*time.Second || configuration.Strategy.QueueCheckInterval != 10*time.Second {
 		t.Errorf("unexpected strategy configuration: %+v", configuration.Strategy)
 	}
 	if configuration.Execution.Mode != domain.ExecutionModeRequestApproval {
 		t.Errorf("unexpected execution configuration: %+v", configuration.Execution)
 	}
-	if configuration.Runtime.DataDir != "data" || configuration.Runtime.LogDir != "logs" || configuration.Runtime.LogLevel != "debug" || configuration.Runtime.LogColor != "auto" {
+	if configuration.Runtime.DataDir != "data" || configuration.Runtime.LogDir != "logs" || configuration.Runtime.LogLevel != "debug" || configuration.Runtime.LogColor != "auto" || configuration.Runtime.NetworkRetryCount != 3 {
 		t.Errorf("unexpected runtime configuration: %+v", configuration.Runtime)
 	}
 }
@@ -98,6 +100,9 @@ func TestLoadRejectsInvalidConfiguration(t *testing.T) {
 		{name: "free space reserve overflow", content: strings.Replace(validYAML, "min_free_space_gib: 10", "min_free_space_gib: 8589934592", 1)},
 		{name: "invalid interval", content: strings.Replace(validYAML, `refresh_interval: "121s"`, `refresh_interval: "later"`, 1)},
 		{name: "zero interval", content: strings.Replace(validYAML, `refresh_interval: "121s"`, `refresh_interval: "0s"`, 1)},
+		{name: "missing queue interval", content: strings.Replace(validYAML, "  queue_check_interval: \"10s\"\n", "", 1)},
+		{name: "invalid queue interval", content: strings.Replace(validYAML, `queue_check_interval: "10s"`, `queue_check_interval: "later"`, 1)},
+		{name: "zero queue interval", content: strings.Replace(validYAML, `queue_check_interval: "10s"`, `queue_check_interval: "0s"`, 1)},
 		{name: "missing execution mode", content: strings.Replace(validYAML, `mode: " REQUEST_APPROVAL "`, `mode: ""`, 1)},
 		{name: "invalid execution mode", content: strings.Replace(validYAML, `mode: " REQUEST_APPROVAL "`, `mode: "dry_run"`, 1)},
 		{name: "missing data directory", content: strings.Replace(validYAML, `data_dir: " data "`, `data_dir: ""`, 1)},
@@ -105,6 +110,9 @@ func TestLoadRejectsInvalidConfiguration(t *testing.T) {
 		{name: "invalid log level", content: strings.Replace(validYAML, `log_level: " DEBUG "`, `log_level: "trace"`, 1)},
 		{name: "missing log color", content: strings.Replace(validYAML, `log_color: " AUTO "`, `log_color: ""`, 1)},
 		{name: "invalid log color", content: strings.Replace(validYAML, `log_color: " AUTO "`, `log_color: "rainbow"`, 1)},
+		{name: "missing network retry count", content: strings.Replace(validYAML, "  network_retry_count: 3\n", "", 1)},
+		{name: "negative network retry count", content: strings.Replace(validYAML, "network_retry_count: 3", "network_retry_count: -1", 1)},
+		{name: "excessive network retry count", content: strings.Replace(validYAML, "network_retry_count: 3", "network_retry_count: 101", 1)},
 	}
 	for _, test := range tests {
 		test := test

@@ -55,10 +55,11 @@ type yamlClient struct {
 }
 
 type yamlStrategy struct {
-	MaxDiskUsageGiB   int64  `yaml:"max_disk_usage_gib"`
-	MaxTorrentSizeGiB *int64 `yaml:"max_torrent_size_gib"`
-	MinFreeSpaceGiB   int64  `yaml:"min_free_space_gib"`
-	RefreshInterval   string `yaml:"refresh_interval"`
+	MaxDiskUsageGiB    int64  `yaml:"max_disk_usage_gib"`
+	MaxTorrentSizeGiB  *int64 `yaml:"max_torrent_size_gib"`
+	MinFreeSpaceGiB    int64  `yaml:"min_free_space_gib"`
+	RefreshInterval    string `yaml:"refresh_interval"`
+	QueueCheckInterval string `yaml:"queue_check_interval"`
 }
 
 type yamlExecution struct {
@@ -66,10 +67,11 @@ type yamlExecution struct {
 }
 
 type yamlRuntime struct {
-	DataDir  string `yaml:"data_dir"`
-	LogDir   string `yaml:"log_dir"`
-	LogLevel string `yaml:"log_level"`
-	LogColor string `yaml:"log_color"`
+	DataDir           string `yaml:"data_dir"`
+	LogDir            string `yaml:"log_dir"`
+	LogLevel          string `yaml:"log_level"`
+	LogColor          string `yaml:"log_color"`
+	NetworkRetryCount *int   `yaml:"network_retry_count"`
 }
 
 // Load reads one strict YAML document from path and validates all runtime settings.
@@ -119,6 +121,7 @@ func validate(raw yamlConfig) (Config, error) {
 	raw.Client.Username = strings.TrimSpace(raw.Client.Username)
 	raw.Client.SavePath = strings.TrimSpace(raw.Client.SavePath)
 	raw.Strategy.RefreshInterval = strings.TrimSpace(raw.Strategy.RefreshInterval)
+	raw.Strategy.QueueCheckInterval = strings.TrimSpace(raw.Strategy.QueueCheckInterval)
 	raw.Execution.Mode = strings.ToLower(strings.TrimSpace(raw.Execution.Mode))
 	raw.Runtime.DataDir = strings.TrimSpace(raw.Runtime.DataDir)
 	raw.Runtime.LogDir = strings.TrimSpace(raw.Runtime.LogDir)
@@ -136,6 +139,7 @@ func validate(raw yamlConfig) (Config, error) {
 		{name: "client.username", value: raw.Client.Username},
 		{name: "client.password", value: strings.TrimSpace(raw.Client.Password)},
 		{name: "strategy.refresh_interval", value: raw.Strategy.RefreshInterval},
+		{name: "strategy.queue_check_interval", value: raw.Strategy.QueueCheckInterval},
 		{name: "execution.mode", value: raw.Execution.Mode},
 		{name: "runtime.data_dir", value: raw.Runtime.DataDir},
 		{name: "runtime.log_dir", value: raw.Runtime.LogDir},
@@ -181,6 +185,16 @@ func validate(raw yamlConfig) (Config, error) {
 	if err != nil || refreshInterval <= 0 {
 		return Config{}, fieldError("strategy.refresh_interval", "must be a positive Go duration")
 	}
+	queueCheckInterval, err := time.ParseDuration(raw.Strategy.QueueCheckInterval)
+	if err != nil || queueCheckInterval <= 0 {
+		return Config{}, fieldError("strategy.queue_check_interval", "must be a positive Go duration")
+	}
+	if raw.Runtime.NetworkRetryCount == nil {
+		return Config{}, fieldError("runtime.network_retry_count", "is required")
+	}
+	if *raw.Runtime.NetworkRetryCount < 0 || *raw.Runtime.NetworkRetryCount > 100 {
+		return Config{}, fieldError("runtime.network_retry_count", "must be between 0 and 100")
+	}
 	executionMode := domain.ExecutionMode(raw.Execution.Mode)
 	if !executionMode.Valid() {
 		return Config{}, fieldError("execution.mode", "must be request_approval or yolo")
@@ -211,13 +225,15 @@ func validate(raw yamlConfig) (Config, error) {
 			MaxTorrentSizeBytes: maxTorrentSizeBytes,
 			MinFreeSpaceBytes:   raw.Strategy.MinFreeSpaceGiB * gib,
 			RefreshInterval:     refreshInterval,
+			QueueCheckInterval:  queueCheckInterval,
 		},
 		Execution: Execution{Mode: executionMode},
 		Runtime: Runtime{
-			DataDir:  raw.Runtime.DataDir,
-			LogDir:   raw.Runtime.LogDir,
-			LogLevel: raw.Runtime.LogLevel,
-			LogColor: raw.Runtime.LogColor,
+			DataDir:           raw.Runtime.DataDir,
+			LogDir:            raw.Runtime.LogDir,
+			LogLevel:          raw.Runtime.LogLevel,
+			LogColor:          raw.Runtime.LogColor,
+			NetworkRetryCount: *raw.Runtime.NetworkRetryCount,
 		},
 	}, nil
 }

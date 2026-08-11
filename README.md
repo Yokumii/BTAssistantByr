@@ -65,11 +65,11 @@ go run ./cmd/btassistantbyr -config config/config.yaml
 
 本地构建显示 `dev`，Release 中的二进制显示对应 Git 标签，例如 `v1.2.3` 或 `v1.2.3-alpha.1`。
 
-程序启动时会依次完成配置加载、BYR 会话建立、qBittorrent 登录和依赖装配，随后立即执行第一轮 TopFree 获取与规划，再按 `strategy.refresh_interval` 串行轮询。任何认证、页面解析、客户端请求、策略或执行错误都会终止进程并返回非零退出码；按 `Ctrl+C` 或发送 `SIGTERM` 会正常取消当前请求和轮询。批准提示正在等待输入时也可以直接按 `Ctrl+C` 退出。
+程序启动时会依次完成配置加载、BYR 会话建立、qBittorrent 登录和依赖装配，随后立即获取第一份 TopFree 快照并检查队列。之后使用两个独立节拍：`strategy.refresh_interval` 重新访问 BYR 获取 TopFree，`strategy.queue_check_interval` 使用最近一次成功快照检查 qBittorrent 状态并推进队列。按 `Ctrl+C` 或发送 `SIGTERM` 会正常取消当前请求和轮询，批准提示正在等待输入时也可以直接退出。
 
 本地配置应由 `config/config.example.yaml` 复制为 `config/config.yaml`。真实配置和运行数据均已加入 `.gitignore`，不要提交账号、密码、Cookie 或 passkey。
 
-配置加载不会填充隐式默认值，并且只接受一个不超过 1 MiB 的 YAML 文档。未知字段、缺少必填项、非法 URL、非正数容量、无法解析的轮询间隔、未知执行模式或日志选项都会让启动显式失败。`strategy.max_disk_usage_gib`、`strategy.max_torrent_size_gib` 和 `strategy.min_free_space_gib` 使用 GiB，后者是每轮下载完成后必须保留的真实磁盘可用空间；`strategy.refresh_interval` 使用 Go duration 格式，例如 `121s` 或 `2m`。`tracker.proxy_url`、`tracker.cookie` 和 `client.save_path` 可以留空，`strategy.max_torrent_size_gib` 可以省略。
+配置加载不会填充隐式默认值，并且只接受一个不超过 1 MiB 的 YAML 文档。未知字段、缺少必填项、非法 URL、非正数容量、无法解析的轮询间隔、未知执行模式或日志选项都会让启动显式失败。`strategy.max_disk_usage_gib`、`strategy.max_torrent_size_gib` 和 `strategy.min_free_space_gib` 使用 GiB，后者是每轮下载完成后必须保留的真实磁盘可用空间；两个间隔均使用 Go duration 格式，例如 `10s`、`121s` 或 `2m`。`tracker.proxy_url`、`tracker.cookie` 和 `client.save_path` 可以留空，`strategy.max_torrent_size_gib` 可以省略。
 
 磁盘安全配置示例：
 
@@ -81,9 +81,18 @@ strategy:
   max_disk_usage_gib: 500
   max_torrent_size_gib: 100
   min_free_space_gib: 10
+  refresh_interval: "121s"
+  queue_check_interval: "10s"
 ```
 
 `strategy.max_torrent_size_gib` 是可选的单种大小上限。省略时不限制；配置后必须是正整数。大小严格超过上限的 TopFree 不会进入待下载队列，等于上限时仍允许下载。该限制只阻止新增，不会因为修改配置而删除仍然 TopFree 的已有任务。
+
+`refresh_interval` 和 `queue_check_interval` 都是必填正数，但职责不同：
+
+- `refresh_interval`：重新请求 BYR 页面，更新哪些种子仍然 TopFree；刷新成功后立即执行一次队列检查。
+- `queue_check_interval`：不刷新 BYR TopFree 页面，复用最近一次成功快照读取 qBittorrent，检查当前任务是否完成、候选是否需要打标或清理，以及是否可以启动下一项；真正添加队首时仍可能访问 BYR 获取尚未缓存的下载凭证。
+
+如果一次 BYR 刷新在网络重试后仍然失败，程序会立即将缓存快照标记为不可用于执行；在下一次 BYR 刷新成功前，队列节拍不会使用旧快照执行任何读写策略，避免因过期页面信息误删种子。
 
 `client.save_path` 留空时，程序从 qBittorrent 读取默认下载路径。每轮严格执行“检测真实可用空间 → 生成策略 → 删除策略允许回收的旧 TopFree 文件 → 再次检测真实可用空间 → 添加队首下载”的流程。下载前要求实际可用空间至少覆盖队首种子的大小和 `min_free_space_gib` 安全余量；检测失败、路径变化、空间不足或删除后空间未按预期释放时都会停止，且不会发送下载请求。
 
@@ -112,13 +121,18 @@ runtime:
   log_dir: "logs"
   log_level: "info"
   log_color: "auto"
+  network_retry_count: 3
 ```
+
+`network_retry_count` 是必填的额外重试次数，范围为 `0..100`。例如配置为 `3` 时，一个外部调用最多尝试 `4` 次；相邻重试固定等待 1 秒。以下失败会重试：连接失败、连接重置、HTTP 客户端超时、`408`、`425`、`429` 和 `5xx`。认证失效、权限拒绝、页面解析失败、配置/策略错误和用户拒绝审批不是瞬时网络错误，不会伪装成重试成功。
+
+重试针对单个 BYR 或 qBittorrent 调用，不会重放整轮策略。运行期间重试耗尽后：TopFree 刷新失败会禁用旧快照并等待下一次 `refresh_interval`；qBittorrent 队列检查或写调用失败会停止当前执行链并等待下一次 `queue_check_interval`，不会让主进程退出。已经被远端确认完成的前序写操作不会回滚；这避免了为恢复网络而重复执行整轮删除和下载计划。程序启动所必需的 BYR/qBittorrent 登录也会按相同次数重试；网络重试仍耗尽时不执行任何策略，等待一个 `refresh_interval` 后重新初始化。配置、认证拒绝等非网络错误仍会让启动显式失败。
 
 `log_level` 是最低输出等级，只接受：
 
 - `debug`：输出源码位置、应用装配、认证方式、轮询轮次、候选与客户端快照、完整策略计划、下载预检以及打标、重新汇报、停止、删除、添加等步骤。
 - `info`：输出启动、会话建立、TopFree 快照数量、策略计划汇总、批准结果和执行完成等正常业务事件。
-- `warn`：输出 YOLO 无批准写入、用户拒绝执行等需要注意的事件。
+- `warn`：输出网络重试、重试耗尽后跳过节拍、YOLO 无批准写入、用户拒绝执行等需要注意的事件。
 - `error`：只输出导致应用失败的错误。
 
 `log_color` 只控制终端输出，只接受：
@@ -148,7 +162,8 @@ runtime:
 - 解析种子 ID、名称、大小、做种/下载人数和 Free 截止时间，并从详情页获取种子 Hash
 - 在 BYR 客户端会话内缓存 ID 到 Hash 的映射，减少重复详情页请求
 - 从 BYR 用户页面读取并缓存 passkey，按种子 ID 生成 qBittorrent 可用的下载 URL
-- 按指定间隔串行轮询 TopFree 列表，支持上下文取消并显式返回获取和处理错误
+- 使用独立的 BYR TopFree 刷新间隔和 qBittorrent 队列检查间隔，失败的 BYR 刷新会禁用旧快照直到下次成功
+- 对 BYR 和 qBittorrent 的单次外部调用执行可配置网络重试，运行期重试耗尽后跳过当前节拍而不退出进程
 - 查询指定标签的 qBittorrent 种子，并映射 Hash、名称、总大小、已下载大小、剩余大小、状态、添加时间、保存路径和标签
 - 查询 qBittorrent 全量种子快照，确保识别已经存在但尚未打 `sc` 的当前 TopFree
 - 通过 qBittorrent 所在端检测实际下载路径可用空间，将安全余量纳入纯策略计算，并在删除完成后复检

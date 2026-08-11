@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/Yokumii/BTAssistantByr/internal/netretry"
 )
 
 func TestAuthenticatorLogin(t *testing.T) {
@@ -204,6 +206,9 @@ func TestAuthenticatorLoginRejectsUnexpectedStatus(t *testing.T) {
 	_, err = authenticator.Login(context.Background(), "alice", "secret")
 	if !errors.Is(err, ErrUnexpectedStatus) {
 		t.Fatalf("unexpected error: got %v, want %v", err, ErrUnexpectedStatus)
+	}
+	if !netretry.IsTransient(err) {
+		t.Fatalf("503 error was not marked transient: %v", err)
 	}
 }
 

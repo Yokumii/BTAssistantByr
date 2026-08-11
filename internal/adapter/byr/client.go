@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/Yokumii/BTAssistantByr/internal/domain"
+	"github.com/Yokumii/BTAssistantByr/internal/netretry"
 	"github.com/Yokumii/BTAssistantByr/internal/port"
 )
 
@@ -186,7 +187,11 @@ func (c *Client) get(ctx context.Context, relativePath string, query url.Values)
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		response.Body.Close()
-		return nil, fmt.Errorf("%w: %s", ErrUnexpectedStatus, response.Status)
+		statusErr := fmt.Errorf("%w: %s", ErrUnexpectedStatus, response.Status)
+		if netretry.TransientStatus(response.StatusCode) {
+			statusErr = netretry.Transient(statusErr)
+		}
+		return nil, statusErr
 	}
 
 	return response, nil

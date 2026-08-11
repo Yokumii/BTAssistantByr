@@ -7,13 +7,16 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/Yokumii/BTAssistantByr/internal/app"
 	"github.com/Yokumii/BTAssistantByr/internal/config"
 	"github.com/Yokumii/BTAssistantByr/internal/logging"
+	"github.com/Yokumii/BTAssistantByr/internal/netretry"
 )
 
 const defaultConfigPath = "config/config.yaml"
@@ -82,8 +85,14 @@ func run(
 		"log_level", configuration.Runtime.LogLevel,
 		"log_file", logSystem.FilePath(),
 	)
-	application, err := app.AssembleWithLogger(ctx, configuration, input, output, logger)
+	application, err := assembleUntilReachable(ctx, configuration.Strategy.RefreshInterval, logger, func() (*app.Application, error) {
+		return app.AssembleWithLogger(ctx, configuration, input, output, logger)
+	})
 	if err != nil {
+		if errors.Is(err, context.Canceled) && ctx.Err() != nil {
+			logger.Info("BTAssistantByr stopped before initialization completed")
+			return nil
+		}
 		logger.ErrorContext(ctx, "application assembly failed", "error", err)
 		return fmt.Errorf("assemble application: %w", err)
 	}
@@ -91,4 +100,37 @@ func run(
 		return fmt.Errorf("run application: %w", err)
 	}
 	return nil
+}
+
+func assembleUntilReachable[T any](
+	ctx context.Context,
+	retryInterval time.Duration,
+	logger *slog.Logger,
+	assemble func() (T, error),
+) (T, error) {
+	var zero T
+	for {
+		result, err := assemble()
+		if err == nil {
+			return result, nil
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return zero, ctxErr
+		}
+		if !netretry.IsTransient(err) {
+			return zero, err
+		}
+		logger.WarnContext(ctx, "application initialization skipped after network retries",
+			"next_attempt_in", retryInterval,
+			"error", err,
+		)
+
+		timer := time.NewTimer(retryInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return zero, ctx.Err()
+		case <-timer.C:
+		}
+	}
 }

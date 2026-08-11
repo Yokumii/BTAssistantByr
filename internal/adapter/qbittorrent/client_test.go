@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Yokumii/BTAssistantByr/internal/domain"
+	"github.com/Yokumii/BTAssistantByr/internal/netretry"
 	"github.com/Yokumii/BTAssistantByr/internal/port"
 )
 
@@ -350,6 +351,20 @@ func TestClientReportsExpiredSession(t *testing.T) {
 	_, err := client.ListByTag(context.Background(), "sc")
 	if !errors.Is(err, ErrSessionExpired) {
 		t.Fatalf("error = %v, want ErrSessionExpired", err)
+	}
+}
+
+func TestClientMarksTemporaryServerFailureAsTransient(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	_, err := newTestClient(t, server).ListAll(context.Background())
+	if !errors.Is(err, ErrUnexpectedStatus) || !netretry.IsTransient(err) {
+		t.Fatalf("ListAll() error = %v, want transient ErrUnexpectedStatus", err)
 	}
 }
 
