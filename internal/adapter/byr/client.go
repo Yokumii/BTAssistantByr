@@ -33,11 +33,19 @@ var (
 
 var _ port.Tracker = (*Client)(nil)
 
+// CredentialRefresh obtains a new BYR session after the current cookies expire.
+type CredentialRefresh func(context.Context) (Credential, error)
+
 // Client accesses authenticated BYR tracker pages.
 type Client struct {
 	baseURL    *url.URL
 	httpClient *http.Client
-	credential Credential
+
+	credentialMu         sync.RWMutex
+	credential           Credential
+	credentialGeneration uint64
+	refreshMu            sync.Mutex
+	refreshCredential    CredentialRefresh
 
 	hashMu    sync.RWMutex
 	hashCache map[domain.TorrentID]domain.TorrentHash
@@ -93,18 +101,32 @@ func (c *Client) Passkey(ctx context.Context) (string, error) {
 
 // NewClient creates an authenticated client that shares this authenticator's HTTP settings.
 func (a *Authenticator) NewClient(credential Credential) (*Client, error) {
-	credential.AuthToken = strings.TrimSpace(credential.AuthToken)
-	credential.SessionID = strings.TrimSpace(credential.SessionID)
-	if credential.AuthToken == "" {
-		return nil, ErrAuthenticationFailed
+	return a.NewRefreshingClient(credential, nil)
+}
+
+// NewRefreshingClient creates a client that can replace expired session cookies.
+func (a *Authenticator) NewRefreshingClient(credential Credential, refresh CredentialRefresh) (*Client, error) {
+	credential, err := normalizeCredential(credential)
+	if err != nil {
+		return nil, err
 	}
 
 	return &Client{
-		baseURL:    a.baseURL,
-		httpClient: a.httpClient,
-		credential: credential,
-		hashCache:  make(map[domain.TorrentID]domain.TorrentHash),
+		baseURL:           a.baseURL,
+		httpClient:        a.httpClient,
+		credential:        credential,
+		refreshCredential: refresh,
+		hashCache:         make(map[domain.TorrentID]domain.TorrentHash),
 	}, nil
+}
+
+func normalizeCredential(credential Credential) (Credential, error) {
+	credential.AuthToken = strings.TrimSpace(credential.AuthToken)
+	credential.SessionID = strings.TrimSpace(credential.SessionID)
+	if credential.AuthToken == "" {
+		return Credential{}, ErrAuthenticationFailed
+	}
+	return credential, nil
 }
 
 // ListTopFree returns all torrents on the current page that are both sticky and free.
@@ -161,6 +183,23 @@ func (c *Client) TorrentHash(ctx context.Context, torrentID domain.TorrentID) (d
 }
 
 func (c *Client) get(ctx context.Context, relativePath string, query url.Values) (*http.Response, error) {
+	for attempt := 0; attempt < 2; attempt++ {
+		credential, generation := c.currentCredential()
+		response, err := c.getWithCredential(ctx, relativePath, query, credential)
+		if !errors.Is(err, ErrSessionExpired) {
+			return response, err
+		}
+		if attempt > 0 || c.refreshCredential == nil {
+			return nil, err
+		}
+		if err := c.refreshSession(ctx, generation); err != nil {
+			return nil, fmt.Errorf("refresh BYR session: %w", err)
+		}
+	}
+	return nil, ErrSessionExpired
+}
+
+func (c *Client) getWithCredential(ctx context.Context, relativePath string, query url.Values, credential Credential) (*http.Response, error) {
 	endpoint := *c.baseURL
 	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/" + relativePath
 	endpoint.RawPath = ""
@@ -172,9 +211,9 @@ func (c *Client) get(ctx context.Context, relativePath string, query url.Values)
 	}
 	request.Header.Set("Accept", "text/html")
 	request.Header.Set("Referer", (&url.URL{Scheme: c.baseURL.Scheme, Host: c.baseURL.Host}).String())
-	request.AddCookie(&http.Cookie{Name: authTokenCookie, Value: c.credential.AuthToken})
-	if c.credential.SessionID != "" {
-		request.AddCookie(&http.Cookie{Name: sessionIDCookie, Value: c.credential.SessionID})
+	request.AddCookie(&http.Cookie{Name: authTokenCookie, Value: credential.AuthToken})
+	if credential.SessionID != "" {
+		request.AddCookie(&http.Cookie{Name: sessionIDCookie, Value: credential.SessionID})
 	}
 
 	response, err := c.httpClient.Do(request)
@@ -195,6 +234,38 @@ func (c *Client) get(ctx context.Context, relativePath string, query url.Values)
 	}
 
 	return response, nil
+}
+
+func (c *Client) currentCredential() (Credential, uint64) {
+	c.credentialMu.RLock()
+	defer c.credentialMu.RUnlock()
+	return c.credential, c.credentialGeneration
+}
+
+func (c *Client) refreshSession(ctx context.Context, expiredGeneration uint64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	c.refreshMu.Lock()
+	defer c.refreshMu.Unlock()
+
+	_, currentGeneration := c.currentCredential()
+	if currentGeneration != expiredGeneration {
+		return nil
+	}
+	credential, err := c.refreshCredential(ctx)
+	if err != nil {
+		return err
+	}
+	credential, err = normalizeCredential(credential)
+	if err != nil {
+		return err
+	}
+	c.credentialMu.Lock()
+	c.credential = credential
+	c.credentialGeneration++
+	c.credentialMu.Unlock()
+	return nil
 }
 
 func validTorrentID(torrentID domain.TorrentID) bool {

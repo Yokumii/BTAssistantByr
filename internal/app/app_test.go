@@ -107,6 +107,52 @@ func TestAssembleLogsIntoBYRWhenCookieIsEmpty(t *testing.T) {
 	}
 }
 
+func TestApplicationRenewsExpiredConfiguredBYRCookie(t *testing.T) {
+	t.Parallel()
+
+	fixture := newLifecycleFixture(t)
+	defer fixture.Close()
+	fixture.expireInitialBYRSession = true
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fixture.onMutation = cancel
+	fixture.renewalFailures = 1
+	configuration := fixture.configuration(domain.ExecutionModeYOLO, true)
+	configuration.Runtime.NetworkRetryCount = 1
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	application, err := AssembleWithLogger(
+		ctx,
+		configuration,
+		nil,
+		nil,
+		logger,
+	)
+	if err != nil {
+		t.Fatalf("AssembleWithLogger() error = %v", err)
+	}
+	if err := application.Run(ctx); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if got := fixture.byrLogins.Load(); got != 2 {
+		t.Fatalf("BYR renewal logins = %d, want 2", got)
+	}
+	if got := fixture.mutations.Load(); got != 1 {
+		t.Fatalf("qBittorrent mutations = %d, want 1", got)
+	}
+	for _, expected := range []string{"BYR session expired; reauthenticating", "network request failed; retrying", "BYR session renewed"} {
+		if !strings.Contains(logs.String(), expected) {
+			t.Errorf("logs do not contain %q:\n%s", expected, logs.String())
+		}
+	}
+	for _, secret := range []string{"byr-password", "tracker-session", "tracker-session-renewed"} {
+		if strings.Contains(logs.String(), secret) {
+			t.Errorf("session renewal logs contain secret %q", secret)
+		}
+	}
+}
+
 func TestAssembleRejectsInvalidModeBeforeNetworkAccess(t *testing.T) {
 	t.Parallel()
 
@@ -120,9 +166,11 @@ func TestAssembleRejectsInvalidModeBeforeNetworkAccess(t *testing.T) {
 
 type lifecycleFixture struct {
 	*httptest.Server
-	byrLogins  atomic.Int32
-	mutations  atomic.Int32
-	onMutation func()
+	byrLogins               atomic.Int32
+	mutations               atomic.Int32
+	onMutation              func()
+	expireInitialBYRSession bool
+	renewalFailures         int32
 }
 
 func newLifecycleFixture(t *testing.T) *lifecycleFixture {
@@ -167,9 +215,19 @@ func (fixture *lifecycleFixture) serveHTTP(t *testing.T, response http.ResponseW
 	t.Helper()
 	switch request.URL.Path {
 	case "/tracker/api/v2/login.php":
-		fixture.byrLogins.Add(1)
-		http.SetCookie(response, &http.Cookie{Name: "auth_token", Value: "tracker-session", Path: "/"})
-		http.SetCookie(response, &http.Cookie{Name: "session_id", Value: "tracker-session-id", Path: "/"})
+		loginAttempt := fixture.byrLogins.Add(1)
+		if fixture.expireInitialBYRSession && loginAttempt <= fixture.renewalFailures {
+			response.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		authToken := "tracker-session"
+		sessionID := "tracker-session-id"
+		if fixture.expireInitialBYRSession {
+			authToken = "tracker-session-renewed"
+			sessionID = "tracker-session-id-renewed"
+		}
+		http.SetCookie(response, &http.Cookie{Name: "auth_token", Value: authToken, Path: "/"})
+		http.SetCookie(response, &http.Cookie{Name: "session_id", Value: sessionID, Path: "/"})
 		response.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(response, `{"success":true,"code":200,"data":{"auth_token":"api-token"}}`)
 	case "/webui/api/v2/auth/login":
@@ -185,10 +243,24 @@ func (fixture *lifecycleFixture) serveHTTP(t *testing.T, response http.ResponseW
 		}
 		fmt.Fprint(response, 100*(1<<30))
 	case "/tracker/torrents.php":
-		assertCookie(t, request, "auth_token", "tracker-session")
+		if fixture.expireInitialBYRSession {
+			cookie, cookieErr := request.Cookie("auth_token")
+			if cookieErr == nil && cookie.Value == "tracker-session" {
+				response.Header().Set("Location", "/tracker/login.php")
+				response.WriteHeader(http.StatusFound)
+				return
+			}
+			assertCookie(t, request, "auth_token", "tracker-session-renewed")
+		} else {
+			assertCookie(t, request, "auth_token", "tracker-session")
+		}
 		fmt.Fprint(response, applicationTorrentPage())
 	case "/tracker/details.php":
-		assertCookie(t, request, "auth_token", "tracker-session")
+		expectedToken := "tracker-session"
+		if fixture.expireInitialBYRSession {
+			expectedToken = "tracker-session-renewed"
+		}
+		assertCookie(t, request, "auth_token", expectedToken)
 		fmt.Fprintf(response, "<p>Hash码 %s</p>", applicationFixtureHash)
 	case "/webui/api/v2/torrents/info":
 		assertCookie(t, request, "QBT_SID_8080", "qbit-session")

@@ -85,7 +85,21 @@ func AssembleWithLogger(
 		return nil, err
 	}
 	logger.InfoContext(ctx, "BYR session ready", "reused_auth_token", configuration.Tracker.Cookie != "", "duration", time.Since(byrStarted))
-	byrClient, err := byrAuthenticator.NewClient(byrCredential)
+	byrSessionLogger := rootLogger.With("component", "byr_session")
+	byrClient, err := byrAuthenticator.NewRefreshingClient(byrCredential, func(refreshContext context.Context) (byr.Credential, error) {
+		started := time.Now()
+		byrSessionLogger.WarnContext(refreshContext, "BYR session expired; reauthenticating")
+		credential, refreshErr := byrAuthenticator.Login(
+			refreshContext,
+			configuration.Tracker.Username,
+			configuration.Tracker.Password,
+		)
+		if refreshErr != nil {
+			return byr.Credential{}, fmt.Errorf("reauthenticate BYR: %w", refreshErr)
+		}
+		byrSessionLogger.InfoContext(refreshContext, "BYR session renewed", "duration", time.Since(started))
+		return credential, nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("create BYR client: %w", err)
 	}
