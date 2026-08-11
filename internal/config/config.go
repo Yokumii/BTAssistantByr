@@ -1,14 +1,19 @@
 // Package config defines and loads validated application configuration.
 package config
 
-import "time"
+import (
+	"time"
+
+	"github.com/Yokumii/BTAssistantByr/internal/domain"
+)
 
 // Config contains all application configuration groups.
 type Config struct {
-	Tracker  Tracker
-	Client   Client
-	Strategy Strategy
-	Runtime  Runtime
+	Tracker   Tracker
+	Client    Client
+	Strategy  Strategy
+	Execution Execution
+	Runtime   Runtime
 }
 
 // Tracker contains BYR connection settings.
@@ -32,6 +37,11 @@ type Client struct {
 type Strategy struct {
 	MaxDiskUsageBytes int64
 	RefreshInterval   time.Duration
+}
+
+// Execution contains the write-safety policy.
+type Execution struct {
+	Mode domain.ExecutionMode
 }
 
 // Runtime contains paths used for generated application data.

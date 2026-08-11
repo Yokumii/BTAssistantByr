@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Yokumii/BTAssistantByr/internal/domain"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -31,10 +32,11 @@ var (
 )
 
 type yamlConfig struct {
-	Tracker  yamlTracker  `yaml:"tracker"`
-	Client   yamlClient   `yaml:"client"`
-	Strategy yamlStrategy `yaml:"strategy"`
-	Runtime  yamlRuntime  `yaml:"runtime"`
+	Tracker   yamlTracker   `yaml:"tracker"`
+	Client    yamlClient    `yaml:"client"`
+	Strategy  yamlStrategy  `yaml:"strategy"`
+	Execution yamlExecution `yaml:"execution"`
+	Runtime   yamlRuntime   `yaml:"runtime"`
 }
 
 type yamlTracker struct {
@@ -55,6 +57,10 @@ type yamlClient struct {
 type yamlStrategy struct {
 	MaxDiskUsageGiB int64  `yaml:"max_disk_usage_gib"`
 	RefreshInterval string `yaml:"refresh_interval"`
+}
+
+type yamlExecution struct {
+	Mode string `yaml:"mode"`
 }
 
 type yamlRuntime struct {
@@ -109,6 +115,7 @@ func validate(raw yamlConfig) (Config, error) {
 	raw.Client.Username = strings.TrimSpace(raw.Client.Username)
 	raw.Client.SavePath = strings.TrimSpace(raw.Client.SavePath)
 	raw.Strategy.RefreshInterval = strings.TrimSpace(raw.Strategy.RefreshInterval)
+	raw.Execution.Mode = strings.ToLower(strings.TrimSpace(raw.Execution.Mode))
 	raw.Runtime.DataDir = strings.TrimSpace(raw.Runtime.DataDir)
 	raw.Runtime.LogDir = strings.TrimSpace(raw.Runtime.LogDir)
 
@@ -123,6 +130,7 @@ func validate(raw yamlConfig) (Config, error) {
 		{name: "client.username", value: raw.Client.Username},
 		{name: "client.password", value: strings.TrimSpace(raw.Client.Password)},
 		{name: "strategy.refresh_interval", value: raw.Strategy.RefreshInterval},
+		{name: "execution.mode", value: raw.Execution.Mode},
 		{name: "runtime.data_dir", value: raw.Runtime.DataDir},
 		{name: "runtime.log_dir", value: raw.Runtime.LogDir},
 	} {
@@ -149,6 +157,10 @@ func validate(raw yamlConfig) (Config, error) {
 	if err != nil || refreshInterval <= 0 {
 		return Config{}, fieldError("strategy.refresh_interval", "must be a positive Go duration")
 	}
+	executionMode := domain.ExecutionMode(raw.Execution.Mode)
+	if !executionMode.Valid() {
+		return Config{}, fieldError("execution.mode", "must be request_approval or yolo")
+	}
 
 	return Config{
 		Tracker: Tracker{
@@ -168,6 +180,7 @@ func validate(raw yamlConfig) (Config, error) {
 			MaxDiskUsageBytes: raw.Strategy.MaxDiskUsageGiB * gib,
 			RefreshInterval:   refreshInterval,
 		},
+		Execution: Execution{Mode: executionMode},
 		Runtime: Runtime{
 			DataDir: raw.Runtime.DataDir,
 			LogDir:  raw.Runtime.LogDir,

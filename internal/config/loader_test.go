@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Yokumii/BTAssistantByr/internal/domain"
 )
 
 const validYAML = `tracker:
@@ -27,6 +29,9 @@ client:
 strategy:
   max_disk_usage_gib: 500
   refresh_interval: "121s"
+
+execution:
+  mode: " REQUEST_APPROVAL "
 
 runtime:
   data_dir: " data "
@@ -51,6 +56,9 @@ func TestLoad(t *testing.T) {
 	}
 	if configuration.Strategy.MaxDiskUsageBytes != 500*(1<<30) || configuration.Strategy.RefreshInterval != 121*time.Second {
 		t.Errorf("unexpected strategy configuration: %+v", configuration.Strategy)
+	}
+	if configuration.Execution.Mode != domain.ExecutionModeRequestApproval {
+		t.Errorf("unexpected execution configuration: %+v", configuration.Execution)
 	}
 	if configuration.Runtime.DataDir != "data" || configuration.Runtime.LogDir != "logs" {
 		t.Errorf("unexpected runtime configuration: %+v", configuration.Runtime)
@@ -81,6 +89,8 @@ func TestLoadRejectsInvalidConfiguration(t *testing.T) {
 		{name: "disk limit overflow", content: strings.Replace(validYAML, "max_disk_usage_gib: 500", "max_disk_usage_gib: 8589934592", 1)},
 		{name: "invalid interval", content: strings.Replace(validYAML, `refresh_interval: "121s"`, `refresh_interval: "later"`, 1)},
 		{name: "zero interval", content: strings.Replace(validYAML, `refresh_interval: "121s"`, `refresh_interval: "0s"`, 1)},
+		{name: "missing execution mode", content: strings.Replace(validYAML, `mode: " REQUEST_APPROVAL "`, `mode: ""`, 1)},
+		{name: "invalid execution mode", content: strings.Replace(validYAML, `mode: " REQUEST_APPROVAL "`, `mode: "dry_run"`, 1)},
 		{name: "missing data directory", content: strings.Replace(validYAML, `data_dir: " data "`, `data_dir: ""`, 1)},
 	}
 	for _, test := range tests {
@@ -92,6 +102,19 @@ func TestLoadRejectsInvalidConfiguration(t *testing.T) {
 				t.Fatalf("Load() error = %v, want ErrInvalidConfig", err)
 			}
 		})
+	}
+}
+
+func TestLoadAcceptsYOLOExecutionMode(t *testing.T) {
+	t.Parallel()
+
+	content := strings.Replace(validYAML, `mode: " REQUEST_APPROVAL "`, `mode: "YOLO"`, 1)
+	configuration, err := Load(writeConfig(t, content))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if configuration.Execution.Mode != domain.ExecutionModeYOLO {
+		t.Errorf("execution mode = %q, want %q", configuration.Execution.Mode, domain.ExecutionModeYOLO)
 	}
 }
 

@@ -15,6 +15,9 @@ strategy:
   max_disk_usage_gib: 500
   refresh_interval: "121s"
 
+execution:
+  mode: "request_approval"
+
 runtime:
   data_dir: "data"
   log_dir: "logs"
