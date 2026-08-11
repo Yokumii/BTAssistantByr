@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/Yokumii/BTAssistantByr/internal/domain"
 )
@@ -182,6 +185,44 @@ func TestTerminalApproverRejectsAnyOtherInput(t *testing.T) {
 	}
 }
 
+func TestTerminalApproverCanBeCanceledWhileWaitingForInput(t *testing.T) {
+	t.Parallel()
+
+	reader, writer := io.Pipe()
+	output := &promptSignalWriter{written: make(chan struct{})}
+	approver, err := NewTerminalApprover(reader, output)
+	if err != nil {
+		t.Fatalf("NewTerminalApprover() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := approver.Approve(ctx, Plan{})
+		result <- err
+	}()
+
+	select {
+	case <-output.written:
+	case <-time.After(time.Second):
+		t.Fatal("approval prompt was not written")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("Approve() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Approve() did not return after cancellation")
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close approval input: %v", err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatalf("close approval reader: %v", err)
+	}
+}
+
 type recordingExecutor struct {
 	plans []Plan
 	err   error
@@ -203,4 +244,14 @@ func (approver *recordingApprover) Approve(_ context.Context, plan Plan) (bool, 
 	approver.calls++
 	approver.plan = plan
 	return approver.approved, approver.err
+}
+
+type promptSignalWriter struct {
+	once    sync.Once
+	written chan struct{}
+}
+
+func (writer *promptSignalWriter) Write(payload []byte) (int, error) {
+	writer.once.Do(func() { close(writer.written) })
+	return len(payload), nil
 }

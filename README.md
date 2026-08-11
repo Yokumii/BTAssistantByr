@@ -2,7 +2,7 @@
 
 BTAssistantByr 是对 [BYRBT_RyukawaChihiro](https://github.com/LetMeFly666/BYRBT_RyukawaChihiro) 的 Go 语言二次开发。
 
-当前仓库已完成工程初始化、架构边界定义、严格配置加载、BYR 和 qBittorrent 登录凭证获取、BYR TopFree 种子发现与定期轮询、BYR 下载 URL、qBittorrent 业务适配器、无副作用的 TopFree 容量规划、显式计划执行器和执行批准策略。执行器尚未接入程序入口或真实环境验证，暂不可用于实际刷流。
+当前仓库已完成工程初始化、架构边界定义、严格配置加载、BYR 和 qBittorrent 登录凭证获取、BYR TopFree 种子发现与定期轮询、BYR 下载 URL、qBittorrent 业务适配器、无副作用的 TopFree 容量规划、显式计划执行器、执行批准策略和应用生命周期装配。程序已经可以启动完整流水线，但尚未进行真实环境写操作验证；首次真机运行建议保持 `request_approval`。
 
 ## 环境要求
 
@@ -40,6 +40,23 @@ make build # 构建到 bin/btassistantbyr
 make check # 依次执行 test、vet、build
 ```
 
+## 运行
+
+先完成本地配置，然后构建并启动：
+
+```bash
+make build
+./bin/btassistantbyr -config config/config.yaml
+```
+
+也可以直接运行：
+
+```bash
+go run ./cmd/btassistantbyr -config config/config.yaml
+```
+
+程序启动时会依次完成配置加载、BYR 会话建立、qBittorrent 登录和依赖装配，随后立即执行第一轮 TopFree 获取与规划，再按 `strategy.refresh_interval` 串行轮询。任何认证、页面解析、客户端请求、策略或执行错误都会终止进程并返回非零退出码；按 `Ctrl+C` 或发送 `SIGTERM` 会正常取消当前请求和轮询。批准提示正在等待输入时也可以直接按 `Ctrl+C` 退出。
+
 本地配置应由 `config/config.example.yaml` 复制为 `config/config.yaml`。真实配置和运行数据均已加入 `.gitignore`，不要提交账号、密码、Cookie 或 passkey。
 
 配置加载不会填充隐式默认值，并且只接受一个不超过 1 MiB 的 YAML 文档。未知字段、缺少必填项、非法 URL、非正数容量、无法解析的轮询间隔或未知执行模式都会让启动显式失败。`strategy.max_disk_usage_gib` 使用 GiB，`strategy.refresh_interval` 使用 Go duration 格式，例如 `121s` 或 `2m`；`tracker.proxy_url`、`tracker.cookie` 和 `client.save_path` 可以留空。
@@ -74,7 +91,7 @@ make check # 依次执行 test、vet、build
 - 单轮协调器串联全量客户端快照、纯策略规划和显式执行，并提供可直接交给定期轮询器的 Handler
 - 对缺少账号密码、无效服务地址、非预期状态码和未返回凭证分别返回显式错误
 
-认证模块不会持久化凭证，也不会把 Cookie 或 SID 写回配置文件。持久化策略将在配置加载功能中单独设计。
+认证模块不会持久化凭证，也不会把 Cookie 或 SID 写回配置文件。`tracker.cookie` 非空时会将其作为已有 BYR `auth_token` 使用；留空时使用用户名和密码重新登录。qBittorrent 每次启动都会使用用户名和密码获取新的 SID。
 
 BYR 需要代理时，可在本地配置中指定代理地址；留空则不显式设置代理：
 
@@ -93,8 +110,9 @@ tracker:
 3. BYR TopFree 种子发现与定期轮询（已完成）
 4. BYR 下载 URL 和 qBittorrent 业务适配器（已完成）
 5. 配置加载与校验（已完成）
-6. TopFree 标签、下载与空间管理规划、显式执行器及执行批准策略（已完成；尚未接入程序入口）
-7. 应用生命周期装配、真实环境受控验证与部署
+6. TopFree 标签、下载与空间管理规划、显式执行器及执行批准策略（已完成）
+7. 应用生命周期装配与命令行入口（已完成）
+8. 真实环境受控验证与部署
 
 ## 许可
 

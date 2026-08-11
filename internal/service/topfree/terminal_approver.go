@@ -35,7 +35,7 @@ func NewTerminalApprover(reader io.Reader, writer io.Writer) (*TerminalApprover,
 	return &TerminalApprover{reader: bufio.NewReader(reader), writer: writer}, nil
 }
 
-// Approve prints all destructive actions and accepts only an exact APPLY response.
+// Approve prints all planned writes and accepts only an exact APPLY response.
 func (a *TerminalApprover) Approve(ctx context.Context, plan Plan) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
@@ -44,7 +44,19 @@ func (a *TerminalApprover) Approve(ctx context.Context, plan Plan) (bool, error)
 		return false, fmt.Errorf("write approval prompt: %w", err)
 	}
 
-	line, err := a.reader.ReadString('\n')
+	response := make(chan approvalResponse, 1)
+	go func() {
+		line, err := a.reader.ReadString('\n')
+		response <- approvalResponse{line: line, err: err}
+	}()
+
+	var result approvalResponse
+	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case result = <-response:
+	}
+	line, err := result.line, result.err
 	if err != nil && !errors.Is(err, io.EOF) {
 		return false, fmt.Errorf("read approval response: %w", err)
 	}
@@ -52,6 +64,11 @@ func (a *TerminalApprover) Approve(ctx context.Context, plan Plan) (bool, error)
 		return false, err
 	}
 	return strings.TrimSpace(line) == ApprovalToken, nil
+}
+
+type approvalResponse struct {
+	line string
+	err  error
 }
 
 func approvalSummary(plan Plan) string {
