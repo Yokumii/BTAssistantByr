@@ -21,3 +21,5 @@ execution:
 runtime:
   data_dir: "data"
   log_dir: "logs"
+  log_level: "info"
+  log_color: "auto"

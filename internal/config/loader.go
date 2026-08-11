@@ -64,8 +64,10 @@ type yamlExecution struct {
 }
 
 type yamlRuntime struct {
-	DataDir string `yaml:"data_dir"`
-	LogDir  string `yaml:"log_dir"`
+	DataDir  string `yaml:"data_dir"`
+	LogDir   string `yaml:"log_dir"`
+	LogLevel string `yaml:"log_level"`
+	LogColor string `yaml:"log_color"`
 }
 
 // Load reads one strict YAML document from path and validates all runtime settings.
@@ -118,6 +120,8 @@ func validate(raw yamlConfig) (Config, error) {
 	raw.Execution.Mode = strings.ToLower(strings.TrimSpace(raw.Execution.Mode))
 	raw.Runtime.DataDir = strings.TrimSpace(raw.Runtime.DataDir)
 	raw.Runtime.LogDir = strings.TrimSpace(raw.Runtime.LogDir)
+	raw.Runtime.LogLevel = strings.ToLower(strings.TrimSpace(raw.Runtime.LogLevel))
+	raw.Runtime.LogColor = strings.ToLower(strings.TrimSpace(raw.Runtime.LogColor))
 
 	for _, required := range []struct {
 		name  string
@@ -133,6 +137,8 @@ func validate(raw yamlConfig) (Config, error) {
 		{name: "execution.mode", value: raw.Execution.Mode},
 		{name: "runtime.data_dir", value: raw.Runtime.DataDir},
 		{name: "runtime.log_dir", value: raw.Runtime.LogDir},
+		{name: "runtime.log_level", value: raw.Runtime.LogLevel},
+		{name: "runtime.log_color", value: raw.Runtime.LogColor},
 	} {
 		if required.value == "" {
 			return Config{}, fieldError(required.name, "is required")
@@ -161,6 +167,12 @@ func validate(raw yamlConfig) (Config, error) {
 	if !executionMode.Valid() {
 		return Config{}, fieldError("execution.mode", "must be request_approval or yolo")
 	}
+	if !oneOf(raw.Runtime.LogLevel, "debug", "info", "warn", "error") {
+		return Config{}, fieldError("runtime.log_level", "must be debug, info, warn, or error")
+	}
+	if !oneOf(raw.Runtime.LogColor, "auto", "always", "never") {
+		return Config{}, fieldError("runtime.log_color", "must be auto, always, or never")
+	}
 
 	return Config{
 		Tracker: Tracker{
@@ -182,10 +194,21 @@ func validate(raw yamlConfig) (Config, error) {
 		},
 		Execution: Execution{Mode: executionMode},
 		Runtime: Runtime{
-			DataDir: raw.Runtime.DataDir,
-			LogDir:  raw.Runtime.LogDir,
+			DataDir:  raw.Runtime.DataDir,
+			LogDir:   raw.Runtime.LogDir,
+			LogLevel: raw.Runtime.LogLevel,
+			LogColor: raw.Runtime.LogColor,
 		},
 	}, nil
+}
+
+func oneOf(value string, allowed ...string) bool {
+	for _, candidate := range allowed {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func validateBaseURL(field, value string) error {

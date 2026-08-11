@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/Yokumii/BTAssistantByr/internal/domain"
 )
@@ -30,6 +31,12 @@ type Coordinator struct {
 	managedSource     ManagedTorrentSource
 	executor          PlanExecutor
 	maxDiskUsageBytes int64
+	logger            *slog.Logger
+}
+
+// SetLogger enables structured planning logs. It must be called before RunOnce.
+func (c *Coordinator) SetLogger(logger *slog.Logger) {
+	c.logger = logger
 }
 
 // NewCoordinator creates a single-cycle TopFree coordinator.
@@ -60,13 +67,37 @@ func (c *Coordinator) RunOnce(ctx context.Context, candidates []domain.Candidate
 	if err := ctx.Err(); err != nil {
 		return Plan{}, err
 	}
+	if c.logger != nil {
+		c.logger.DebugContext(ctx, "loading complete qBittorrent snapshot")
+	}
 	managed, err := c.managedSource.ListAll(ctx)
 	if err != nil {
 		return Plan{}, fmt.Errorf("list all qBittorrent torrents: %w", err)
 	}
+	if c.logger != nil {
+		c.logger.DebugContext(ctx, "qBittorrent snapshot loaded", "torrents", len(managed))
+	}
 	plan, err := BuildPlan(c.maxDiskUsageBytes, candidates, managed)
 	if err != nil {
 		return Plan{}, fmt.Errorf("build TopFree plan: %w", err)
+	}
+	if c.logger != nil {
+		c.logger.InfoContext(ctx, "TopFree plan built",
+			"tag_as_managed", len(plan.TagAsManaged),
+			"unmark_for_deletion", len(plan.UnmarkForDeletion),
+			"mark_for_deletion", len(plan.MarkForDeletion),
+			"downloads", len(plan.Downloads),
+			"skipped", len(plan.Skipped),
+			"current_disk_bytes", plan.CurrentDiskUsageBytes,
+			"projected_disk_bytes", plan.ProjectedDiskUsageBytes,
+		)
+		c.logger.DebugContext(ctx, "TopFree plan details",
+			"tag_hashes", plan.TagAsManaged,
+			"unmark_hashes", plan.UnmarkForDeletion,
+			"mark_hashes", plan.MarkForDeletion,
+			"downloads", plan.Downloads,
+			"skipped", plan.Skipped,
+		)
 	}
 	if err := c.executor.Execute(ctx, plan); err != nil {
 		return plan, fmt.Errorf("execute TopFree plan: %w", err)

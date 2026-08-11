@@ -13,6 +13,7 @@ import (
 
 	"github.com/Yokumii/BTAssistantByr/internal/app"
 	"github.com/Yokumii/BTAssistantByr/internal/config"
+	"github.com/Yokumii/BTAssistantByr/internal/logging"
 )
 
 const defaultConfigPath = "config/config.yaml"
@@ -38,7 +39,7 @@ func run(
 	input io.Reader,
 	output io.Writer,
 	errorOutput io.Writer,
-) error {
+) (resultErr error) {
 	flags := flag.NewFlagSet("btassistantbyr", flag.ContinueOnError)
 	flags.SetOutput(errorOutput)
 	configPath := flags.String("config", defaultConfigPath, "YAML configuration file path")
@@ -60,21 +61,34 @@ func run(
 	if err != nil {
 		return fmt.Errorf("load configuration: %w", err)
 	}
-	if _, err := fmt.Fprintf(output, "正在初始化 BTAssistantByr，执行模式：%s\n", configuration.Execution.Mode); err != nil {
-		return fmt.Errorf("write initialization status: %w", err)
-	}
-	application, err := app.Assemble(ctx, configuration, input, output)
+	logSystem, err := logging.New(logging.Options{
+		Level:   configuration.Runtime.LogLevel,
+		Color:   configuration.Runtime.LogColor,
+		LogDir:  configuration.Runtime.LogDir,
+		Console: errorOutput,
+	})
 	if err != nil {
-		return fmt.Errorf("assemble application: %w", err)
+		return fmt.Errorf("initialize logging: %w", err)
 	}
-	if _, err := fmt.Fprintln(output, "BTAssistantByr 已启动，按 Ctrl+C 安全退出。"); err != nil {
-		return fmt.Errorf("write startup status: %w", err)
+	defer func() {
+		if err := logSystem.Close(); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("close logging: %w", err))
+		}
+	}()
+	logger := logSystem.Logger()
+	logger.InfoContext(ctx, "initializing BTAssistantByr",
+		"version", version,
+		"execution_mode", configuration.Execution.Mode,
+		"log_level", configuration.Runtime.LogLevel,
+		"log_file", logSystem.FilePath(),
+	)
+	application, err := app.AssembleWithLogger(ctx, configuration, input, output, logger)
+	if err != nil {
+		logger.ErrorContext(ctx, "application assembly failed", "error", err)
+		return fmt.Errorf("assemble application: %w", err)
 	}
 	if err := application.Run(ctx); err != nil {
 		return fmt.Errorf("run application: %w", err)
-	}
-	if _, err := fmt.Fprintln(output, "BTAssistantByr 已停止。"); err != nil {
-		return fmt.Errorf("write shutdown status: %w", err)
 	}
 	return nil
 }

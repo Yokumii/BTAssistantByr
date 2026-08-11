@@ -1,9 +1,11 @@
 package topfree
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"strings"
 	"testing"
@@ -21,6 +23,8 @@ func TestExecutorAppliesPlanInOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewExecutor() error = %v", err)
 	}
+	var logs bytes.Buffer
+	executor.SetLogger(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	plan := Plan{
 		TagAsManaged:      []domain.TorrentHash{torrentHash(1)},
 		UnmarkForDeletion: []domain.TorrentHash{torrentHash(1)},
@@ -52,6 +56,14 @@ func TestExecutorAppliesPlanInOrder(t *testing.T) {
 	}
 	if !reflect.DeepEqual(client.calls, wantCalls) {
 		t.Errorf("client calls differ:\n got: %#v\nwant: %#v", client.calls, wantCalls)
+	}
+	for _, expected := range []string{"preflighting TopFree download", "reannouncing cleanup torrents", "stopping cleanup torrents", "deleting cleanup torrents", "adding TopFree torrent"} {
+		if !strings.Contains(logs.String(), expected) {
+			t.Errorf("execution logs do not contain %q:\n%s", expected, logs.String())
+		}
+	}
+	if strings.Contains(logs.String(), "passkey") || strings.Contains(logs.String(), fixtureDownloadURL("3")) {
+		t.Errorf("execution logs contain a sensitive download URL: %s", logs.String())
 	}
 }
 

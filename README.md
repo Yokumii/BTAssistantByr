@@ -69,7 +69,7 @@ go run ./cmd/btassistantbyr -config config/config.yaml
 
 本地配置应由 `config/config.example.yaml` 复制为 `config/config.yaml`。真实配置和运行数据均已加入 `.gitignore`，不要提交账号、密码、Cookie 或 passkey。
 
-配置加载不会填充隐式默认值，并且只接受一个不超过 1 MiB 的 YAML 文档。未知字段、缺少必填项、非法 URL、非正数容量、无法解析的轮询间隔或未知执行模式都会让启动显式失败。`strategy.max_disk_usage_gib` 使用 GiB，`strategy.refresh_interval` 使用 Go duration 格式，例如 `121s` 或 `2m`；`tracker.proxy_url`、`tracker.cookie` 和 `client.save_path` 可以留空。
+配置加载不会填充隐式默认值，并且只接受一个不超过 1 MiB 的 YAML 文档。未知字段、缺少必填项、非法 URL、非正数容量、无法解析的轮询间隔、未知执行模式或日志选项都会让启动显式失败。`strategy.max_disk_usage_gib` 使用 GiB，`strategy.refresh_interval` 使用 Go duration 格式，例如 `121s` 或 `2m`；`tracker.proxy_url`、`tracker.cookie` 和 `client.save_path` 可以留空。
 
 `execution.mode` 是必填项，只接受两种模式：
 
@@ -77,6 +77,41 @@ go run ./cmd/btassistantbyr -config config/config.yaml
 - `yolo`：不请求人工批准，直接执行计划中的打标、删除和下载等写操作，仅适合明确接受自动写入风险的环境。
 
 批准按“单轮完整计划”进行，不会逐条弹出提示；计划摘要会明确列出删除和下载项。无写操作的轮次不会请求批准。
+
+## 日志
+
+日志配置位于 `runtime`：
+
+```yaml
+runtime:
+  data_dir: "data"
+  log_dir: "logs"
+  log_level: "info"
+  log_color: "auto"
+```
+
+`log_level` 是最低输出等级，只接受：
+
+- `debug`：输出源码位置、应用装配、认证方式、轮询轮次、候选与客户端快照、完整策略计划、下载预检以及打标、重新汇报、停止、删除、添加等步骤。
+- `info`：输出启动、会话建立、TopFree 快照数量、策略计划汇总、批准结果和执行完成等正常业务事件。
+- `warn`：输出 YOLO 无批准写入、用户拒绝执行等需要注意的事件。
+- `error`：只输出导致应用失败的错误。
+
+`log_color` 只控制终端输出，只接受：
+
+- `auto`：仅在输出目标是终端时启用颜色，重定向或测试缓冲区不输出 ANSI，推荐使用。
+- `always`：始终输出颜色。
+- `never`：始终关闭颜色。
+
+颜色映射为 DEBUG 青色、INFO 绿色、WARN 黄色、ERROR 红色。所有日志同时追加写入 `runtime.log_dir/btassistantbyr.log`；文件日志永远不包含颜色控制码，方便 `grep`、采集和后续分析。日志不会记录密码、BYR Cookie、qBittorrent SID、passkey 或带 passkey 的下载 URL。
+
+临时定位问题时可切换为：
+
+```yaml
+runtime:
+  log_level: "debug"
+  log_color: "auto"
+```
 
 ## 已实现能力
 
@@ -98,6 +133,7 @@ go run ./cmd/btassistantbyr -config config/config.yaml
 - 容量规划只允许回收带 `sc` 标签且已不再 TopFree 的种子，当前 TopFree 和其他来源的 `toDel` 种子不会进入删除计划
 - 显式执行已校验的计划；任何写入前先预取全部下载 URL，清理固定按重新汇报、停止、删除、添加的顺序执行并在首个错误处停止
 - 支持 `request_approval` 和 `yolo` 两种执行模式；批准模式在整轮写计划执行前要求终端输入 `APPLY`，拒绝时不会触达具体执行器
+- 使用标准库结构化日志，支持终端分级颜色、无 ANSI 文件日志和不泄露凭证的 DEBUG 全流程记录
 - 单轮协调器串联全量客户端快照、纯策略规划和显式执行，并提供可直接交给定期轮询器的 Handler
 - 对缺少账号密码、无效服务地址、非预期状态码和未返回凭证分别返回显式错误
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/Yokumii/BTAssistantByr/internal/domain"
@@ -30,6 +31,12 @@ type Handler func(context.Context, []domain.Candidate) error
 type Poller struct {
 	source   Source
 	interval time.Duration
+	logger   *slog.Logger
+}
+
+// SetLogger enables structured lifecycle logging. It must be called before Run.
+func (p *Poller) SetLogger(logger *slog.Logger) {
+	p.logger = logger
 }
 
 // NewPoller creates a TopFree poller.
@@ -52,13 +59,23 @@ func (p *Poller) Run(ctx context.Context, handler Handler) error {
 		return err
 	}
 
-	for {
+	for round := int64(1); ; round++ {
+		roundStarted := time.Now()
+		if p.logger != nil {
+			p.logger.DebugContext(ctx, "TopFree polling round started", "round", round)
+		}
 		candidates, err := p.source.ListTopFree(ctx)
 		if err != nil {
 			return fmt.Errorf("list TopFree torrents: %w", err)
 		}
+		if p.logger != nil {
+			p.logger.InfoContext(ctx, "TopFree snapshot fetched", "round", round, "candidates", len(candidates), "fetch_duration", time.Since(roundStarted))
+		}
 		if err := handler(ctx, candidates); err != nil {
 			return fmt.Errorf("handle TopFree torrents: %w", err)
+		}
+		if p.logger != nil {
+			p.logger.DebugContext(ctx, "TopFree polling round completed", "round", round, "duration", time.Since(roundStarted), "next_poll_in", p.interval)
 		}
 
 		timer := time.NewTimer(p.interval)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 
@@ -42,6 +43,12 @@ type Executor struct {
 	source   DownloadURLSource
 	client   MutationClient
 	savePath string
+	logger   *slog.Logger
+}
+
+// SetLogger enables detailed execution logs. It must be called before Execute.
+func (e *Executor) SetLogger(logger *slog.Logger) {
+	e.logger = logger
 }
 
 // NewExecutor creates an explicit TopFree plan executor.
@@ -69,6 +76,18 @@ func (e *Executor) Execute(ctx context.Context, plan Plan) error {
 	if err != nil {
 		return err
 	}
+	if e.logger != nil {
+		level := slog.LevelDebug
+		if len(prepared.tagAsManaged)+len(prepared.unmarkForDeletion)+len(prepared.markForDeletion)+len(prepared.downloads) > 0 {
+			level = slog.LevelInfo
+		}
+		e.logger.Log(ctx, level, "TopFree execution plan accepted",
+			"tag_as_managed", len(prepared.tagAsManaged),
+			"unmark_for_deletion", len(prepared.unmarkForDeletion),
+			"mark_for_deletion", len(prepared.markForDeletion),
+			"downloads", len(prepared.downloads),
+		)
+	}
 	if err := e.preflightDownloads(ctx, prepared.downloads); err != nil {
 		return err
 	}
@@ -87,6 +106,13 @@ func (e *Executor) Execute(ctx context.Context, plan Plan) error {
 		if err := e.executeDownload(ctx, download); err != nil {
 			return err
 		}
+	}
+	if e.logger != nil {
+		level := slog.LevelDebug
+		if len(prepared.tagAsManaged)+len(prepared.unmarkForDeletion)+len(prepared.markForDeletion)+len(prepared.downloads) > 0 {
+			level = slog.LevelInfo
+		}
+		e.logger.Log(ctx, level, "TopFree execution plan completed")
 	}
 	return nil
 }
@@ -213,6 +239,9 @@ func (e *Executor) preflightDownloads(ctx context.Context, downloads []preparedD
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if e.logger != nil {
+			e.logger.DebugContext(ctx, "preflighting TopFree download", "torrent_id", downloads[index].candidate.ID, "name", downloads[index].candidate.Name)
+		}
 		sourceURL, err := e.source.DownloadURL(ctx, downloads[index].candidate.ID)
 		if err != nil {
 			return fmt.Errorf("resolve download URL for torrent %s: %w", downloads[index].candidate.ID, err)
@@ -221,6 +250,9 @@ func (e *Executor) preflightDownloads(ctx context.Context, downloads []preparedD
 			return fmt.Errorf("%w for torrent %s", ErrInvalidDownloadURL, downloads[index].candidate.ID)
 		}
 		downloads[index].sourceURL = strings.TrimSpace(sourceURL)
+		if e.logger != nil {
+			e.logger.DebugContext(ctx, "TopFree download preflight completed", "torrent_id", downloads[index].candidate.ID)
+		}
 	}
 	return nil
 }
@@ -231,6 +263,9 @@ func (e *Executor) addTags(ctx context.Context, hashes []domain.TorrentHash, tag
 	}
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if e.logger != nil {
+		e.logger.DebugContext(ctx, operation, "hashes", hashes, "tag", tag)
 	}
 	if err := e.client.AddTags(ctx, hashes, []string{tag}); err != nil {
 		return fmt.Errorf("%s: %w", operation, err)
@@ -244,6 +279,9 @@ func (e *Executor) removeTags(ctx context.Context, hashes []domain.TorrentHash, 
 	}
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if e.logger != nil {
+		e.logger.DebugContext(ctx, operation, "hashes", hashes, "tag", tag)
 	}
 	if err := e.client.RemoveTags(ctx, hashes, []string{tag}); err != nil {
 		return fmt.Errorf("%s: %w", operation, err)
@@ -260,11 +298,17 @@ func (e *Executor) executeDownload(ctx context.Context, download preparedDownloa
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if e.logger != nil {
+			e.logger.DebugContext(ctx, "reannouncing cleanup torrents", "hashes", hashes, "before_torrent_id", download.candidate.ID)
+		}
 		if err := e.client.Reannounce(ctx, hashes); err != nil {
 			return fmt.Errorf("reannounce cleanup torrents before adding %s: %w", download.candidate.ID, err)
 		}
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		if e.logger != nil {
+			e.logger.DebugContext(ctx, "stopping cleanup torrents", "hashes", hashes, "before_torrent_id", download.candidate.ID)
 		}
 		if err := e.client.Pause(ctx, hashes); err != nil {
 			return fmt.Errorf("stop cleanup torrents before adding %s: %w", download.candidate.ID, err)
@@ -272,12 +316,18 @@ func (e *Executor) executeDownload(ctx context.Context, download preparedDownloa
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if e.logger != nil {
+			e.logger.DebugContext(ctx, "deleting cleanup torrents", "hashes", hashes, "delete_files", true, "before_torrent_id", download.candidate.ID)
+		}
 		if err := e.client.Delete(ctx, hashes, true); err != nil {
 			return fmt.Errorf("delete cleanup torrents before adding %s: %w", download.candidate.ID, err)
 		}
 	}
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if e.logger != nil {
+		e.logger.DebugContext(ctx, "adding TopFree torrent", "torrent_id", download.candidate.ID, "name", download.candidate.Name, "save_path", e.savePath, "tag", ManagedTag)
 	}
 	if err := e.client.Add(ctx, port.AddTorrentRequest{
 		SourceURL: download.sourceURL,

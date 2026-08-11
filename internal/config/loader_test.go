@@ -36,6 +36,8 @@ execution:
 runtime:
   data_dir: " data "
   log_dir: " logs "
+  log_level: " DEBUG "
+  log_color: " AUTO "
 `
 
 func TestLoad(t *testing.T) {
@@ -60,7 +62,7 @@ func TestLoad(t *testing.T) {
 	if configuration.Execution.Mode != domain.ExecutionModeRequestApproval {
 		t.Errorf("unexpected execution configuration: %+v", configuration.Execution)
 	}
-	if configuration.Runtime.DataDir != "data" || configuration.Runtime.LogDir != "logs" {
+	if configuration.Runtime.DataDir != "data" || configuration.Runtime.LogDir != "logs" || configuration.Runtime.LogLevel != "debug" || configuration.Runtime.LogColor != "auto" {
 		t.Errorf("unexpected runtime configuration: %+v", configuration.Runtime)
 	}
 }
@@ -92,6 +94,10 @@ func TestLoadRejectsInvalidConfiguration(t *testing.T) {
 		{name: "missing execution mode", content: strings.Replace(validYAML, `mode: " REQUEST_APPROVAL "`, `mode: ""`, 1)},
 		{name: "invalid execution mode", content: strings.Replace(validYAML, `mode: " REQUEST_APPROVAL "`, `mode: "dry_run"`, 1)},
 		{name: "missing data directory", content: strings.Replace(validYAML, `data_dir: " data "`, `data_dir: ""`, 1)},
+		{name: "missing log level", content: strings.Replace(validYAML, `log_level: " DEBUG "`, `log_level: ""`, 1)},
+		{name: "invalid log level", content: strings.Replace(validYAML, `log_level: " DEBUG "`, `log_level: "trace"`, 1)},
+		{name: "missing log color", content: strings.Replace(validYAML, `log_color: " AUTO "`, `log_color: ""`, 1)},
+		{name: "invalid log color", content: strings.Replace(validYAML, `log_color: " AUTO "`, `log_color: "rainbow"`, 1)},
 	}
 	for _, test := range tests {
 		test := test

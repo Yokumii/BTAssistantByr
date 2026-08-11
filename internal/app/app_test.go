@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -76,11 +77,14 @@ func TestAssembleLogsIntoBYRWhenCookieIsEmpty(t *testing.T) {
 	fixture := newLifecycleFixture(t)
 	defer fixture.Close()
 
-	application, err := Assemble(
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	application, err := AssembleWithLogger(
 		context.Background(),
 		fixture.configuration(domain.ExecutionModeYOLO, false),
 		nil,
 		nil,
+		logger,
 	)
 	if err != nil {
 		t.Fatalf("Assemble() error = %v", err)
@@ -90,6 +94,16 @@ func TestAssembleLogsIntoBYRWhenCookieIsEmpty(t *testing.T) {
 	}
 	if got := fixture.byrLogins.Load(); got != 1 {
 		t.Errorf("BYR login requests = %d, want 1", got)
+	}
+	for _, expected := range []string{"assembling application", "BYR session ready", "qBittorrent session ready", "application assembly completed"} {
+		if !strings.Contains(logs.String(), expected) {
+			t.Errorf("assembly logs do not contain %q:\n%s", expected, logs.String())
+		}
+	}
+	for _, secret := range []string{"byr-password", "qbit-password", "tracker-session", "qbit-session"} {
+		if strings.Contains(logs.String(), secret) {
+			t.Errorf("assembly logs contain secret %q", secret)
+		}
 	}
 }
 

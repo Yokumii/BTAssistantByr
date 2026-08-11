@@ -46,6 +46,8 @@ type Execution struct {
 
 // Runtime contains paths used for generated application data.
 type Runtime struct {
-	DataDir string
-	LogDir  string
+	DataDir  string
+	LogDir   string
+	LogLevel string
+	LogColor string
 }
