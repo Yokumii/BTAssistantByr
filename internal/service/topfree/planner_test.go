@@ -248,6 +248,90 @@ func TestBuildPlanWithDiskSpaceValidatesCapacity(t *testing.T) {
 	}
 }
 
+func TestBuildQueuedPlanDownloadsOneBySizeToRemainingFreeTime(t *testing.T) {
+	t.Parallel()
+
+	longLarge := candidate(1, 100, 100, 1)
+	longLarge.FreeUntil = fixtureTime.Add(20 * time.Hour) // score 5 bytes/hour
+	shortSmall := candidate(2, 30, 1, 100)
+	shortSmall.FreeUntil = fixtureTime.Add(5 * time.Hour) // score 6 bytes/hour
+	plan, err := BuildQueuedPlanWithDiskSpace(
+		1000,
+		domain.DiskSpace{Path: "/downloads", FreeBytes: 1000},
+		10,
+		fixtureTime,
+		[]domain.Candidate{shortSmall, longLarge},
+		[]domain.Candidate{shortSmall, longLarge},
+		nil,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("BuildQueuedPlanWithDiskSpace() error = %v", err)
+	}
+	if len(plan.Queued) != 2 {
+		t.Fatalf("Queued = %+v", plan.Queued)
+	}
+	if len(plan.Downloads) != 1 || plan.Downloads[0].Candidate.Hash != longLarge.Hash {
+		t.Fatalf("Downloads = %+v, want lower size/remaining-time score", plan.Downloads)
+	}
+}
+
+func TestBuildQueuedPlanWaitsForCurrentDownload(t *testing.T) {
+	t.Parallel()
+
+	current := candidate(1, 100, 1, 1)
+	next := candidate(2, 20, 1, 1)
+	downloading := managedTorrent(1, 100, 1, ManagedTag)
+	downloading.CompletedBytes = 40
+	downloading.AmountLeftBytes = 60
+	downloading.State = "downloading"
+	plan, err := BuildQueuedPlanWithDiskSpace(
+		1000,
+		domain.DiskSpace{Path: "/downloads", FreeBytes: 1000},
+		10,
+		fixtureTime,
+		[]domain.Candidate{current, next},
+		[]domain.Candidate{next},
+		[]domain.ManagedTorrent{downloading},
+		true,
+	)
+	if err != nil {
+		t.Fatalf("BuildQueuedPlanWithDiskSpace() error = %v", err)
+	}
+	if len(plan.Downloads) != 0 || len(plan.Queued) != 1 || plan.Queued[0].Hash != next.Hash {
+		t.Fatalf("unexpected blocked plan: %+v", plan)
+	}
+}
+
+func TestBuildQueuedPlanRemovesIncompleteTorrentNoLongerTopFree(t *testing.T) {
+	t.Parallel()
+
+	stale := managedTorrent(9, 100, 1, ManagedTag)
+	stale.CompletedBytes = 25
+	stale.AmountLeftBytes = 75
+	stale.State = "stoppedDL"
+	stale.SavePath = "/downloads"
+	plan, err := BuildQueuedPlanWithDiskSpace(
+		1000,
+		domain.DiskSpace{Path: "/downloads", FreeBytes: 100},
+		10,
+		fixtureTime,
+		nil,
+		nil,
+		[]domain.ManagedTorrent{stale},
+		false,
+	)
+	if err != nil {
+		t.Fatalf("BuildQueuedPlanWithDiskSpace() error = %v", err)
+	}
+	if len(plan.RemoveExpired) != 1 || plan.RemoveExpired[0].Hash != stale.Hash {
+		t.Fatalf("RemoveExpired = %+v", plan.RemoveExpired)
+	}
+	if len(plan.MarkForDeletion) != 0 || plan.ProjectedDiskUsageBytes != 0 || plan.ProjectedFreeSpaceBytes != 125 {
+		t.Fatalf("unexpected expired cleanup plan: %+v", plan)
+	}
+}
+
 func TestBuildPlanIsDeterministic(t *testing.T) {
 	t.Parallel()
 

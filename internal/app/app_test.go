@@ -190,7 +190,7 @@ func (fixture *lifecycleFixture) serveHTTP(t *testing.T, response http.ResponseW
 		fmt.Fprintf(response, "<p>Hash码 %s</p>", applicationFixtureHash)
 	case "/webui/api/v2/torrents/info":
 		assertCookie(t, request, "QBT_SID_8080", "qbit-session")
-		fmt.Fprintf(response, `[{"hash":%q,"name":"Existing TopFree","size":1073741824,"added_on":1720000000,"save_path":"/downloads","tags":""}]`, applicationFixtureHash)
+		fmt.Fprintf(response, `[{"hash":%q,"name":"Existing TopFree","size":1073741824,"completed":1073741824,"amount_left":0,"state":"stalledUP","added_on":1720000000,"save_path":"/downloads","tags":""}]`, applicationFixtureHash)
 	case "/webui/api/v2/torrents/addTags":
 		assertCookie(t, request, "QBT_SID_8080", "qbit-session")
 		if err := request.ParseForm(); err != nil {

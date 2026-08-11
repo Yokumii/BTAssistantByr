@@ -146,6 +146,30 @@ func TestExecutorStopsOnFirstMutationError(t *testing.T) {
 	}
 }
 
+func TestExecutorStopsAndDeletesExpiredDownloadWithFiles(t *testing.T) {
+	t.Parallel()
+
+	client := &fakeMutationClient{}
+	executor, err := NewExecutor(&fakeDownloadSource{}, client, "/downloads", 10)
+	if err != nil {
+		t.Fatalf("NewExecutor() error = %v", err)
+	}
+	expired := managedTorrent(4, 100, 1, ManagedTag)
+	expired.CompletedBytes = 25
+	expired.AmountLeftBytes = 75
+	expired.State = "downloading"
+	if err := executor.Execute(context.Background(), Plan{RemoveExpired: []domain.ManagedTorrent{expired}}); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	want := []mutationCall{
+		{name: "pause", hashes: hashes(4)},
+		{name: "delete", hashes: hashes(4), deleteFiles: true},
+	}
+	if !reflect.DeepEqual(client.calls, want) {
+		t.Errorf("client calls = %#v, want %#v", client.calls, want)
+	}
+}
+
 func TestExecutorRejectsPredictableDiskShortageBeforeWrites(t *testing.T) {
 	t.Parallel()
 

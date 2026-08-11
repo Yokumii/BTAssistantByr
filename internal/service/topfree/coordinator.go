@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/Yokumii/BTAssistantByr/internal/domain"
 )
@@ -36,6 +37,8 @@ type Coordinator struct {
 	minFreeSpaceBytes int64
 	savePath          string
 	logger            *slog.Logger
+	queue             downloadQueue
+	now               func() time.Time
 }
 
 // SetLogger enables structured planning logs. It must be called before RunOnce.
@@ -69,6 +72,7 @@ func NewCoordinator(
 		maxDiskUsageBytes: maxDiskUsageBytes,
 		minFreeSpaceBytes: minFreeSpaceBytes,
 		savePath:          strings.TrimSpace(savePath),
+		now:               time.Now,
 	}, nil
 }
 
@@ -100,7 +104,23 @@ func (c *Coordinator) RunOnce(ctx context.Context, candidates []domain.Candidate
 	if c.logger != nil {
 		c.logger.DebugContext(ctx, "qBittorrent snapshot loaded", "torrents", len(managed))
 	}
-	plan, err := BuildPlanWithDiskSpace(c.maxDiskUsageBytes, diskSpace, c.minFreeSpaceBytes, candidates, managed)
+	queue, err := c.queue.sync(candidates, managed)
+	if err != nil {
+		return Plan{}, fmt.Errorf("reconcile TopFree download queue: %w", err)
+	}
+	if c.logger != nil && len(queue.removed) > 0 {
+		c.logger.InfoContext(ctx, "removed torrents no longer TopFree from download queue", "hashes", queue.removed)
+	}
+	plan, err := BuildQueuedPlanWithDiskSpace(
+		c.maxDiskUsageBytes,
+		diskSpace,
+		c.minFreeSpaceBytes,
+		c.now(),
+		candidates,
+		queue.candidates,
+		managed,
+		queue.downloadBlocked,
+	)
 	if err != nil {
 		return Plan{}, fmt.Errorf("build TopFree plan: %w", err)
 	}
@@ -109,6 +129,8 @@ func (c *Coordinator) RunOnce(ctx context.Context, candidates []domain.Candidate
 			"tag_as_managed", len(plan.TagAsManaged),
 			"unmark_for_deletion", len(plan.UnmarkForDeletion),
 			"mark_for_deletion", len(plan.MarkForDeletion),
+			"remove_expired", len(plan.RemoveExpired),
+			"queued", len(plan.Queued),
 			"downloads", len(plan.Downloads),
 			"skipped", len(plan.Skipped),
 			"current_disk_bytes", plan.CurrentDiskUsageBytes,
@@ -121,12 +143,17 @@ func (c *Coordinator) RunOnce(ctx context.Context, candidates []domain.Candidate
 			"tag_hashes", plan.TagAsManaged,
 			"unmark_hashes", plan.UnmarkForDeletion,
 			"mark_hashes", plan.MarkForDeletion,
+			"remove_expired", plan.RemoveExpired,
+			"queued", plan.Queued,
 			"downloads", plan.Downloads,
 			"skipped", plan.Skipped,
 		)
 	}
 	if err := c.executor.Execute(ctx, plan); err != nil {
 		return plan, fmt.Errorf("execute TopFree plan: %w", err)
+	}
+	if len(plan.Downloads) == 1 {
+		c.queue.markSubmitted(plan.Downloads[0].Candidate.Hash)
 	}
 	return plan, nil
 }

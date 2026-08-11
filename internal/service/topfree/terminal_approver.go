@@ -82,13 +82,18 @@ func approvalSummary(plan Plan) string {
 	fmt.Fprintf(&summary, "- 添加 sc 标签：%d\n", len(plan.TagAsManaged))
 	fmt.Fprintf(&summary, "- 移除 toDel 标签：%d\n", len(plan.UnmarkForDeletion))
 	fmt.Fprintf(&summary, "- 添加 toDel 标签：%d\n", len(plan.MarkForDeletion))
-	fmt.Fprintf(&summary, "- 删除种子及文件：%d\n", deleteCount)
+	fmt.Fprintf(&summary, "- 失去 TopFree 后立即停止并删除：%d\n", len(plan.RemoveExpired))
+	fmt.Fprintf(&summary, "- 为释放空间删除种子及文件：%d\n", deleteCount)
+	fmt.Fprintf(&summary, "- 等待队列：%d\n", len(plan.Queued))
 	fmt.Fprintf(&summary, "- 下载种子：%d\n", len(plan.Downloads))
 	fmt.Fprintf(&summary, "- 预计磁盘占用：%.2f GiB\n", bytesAsGiB(plan.ProjectedDiskUsageBytes))
 	if plan.EffectiveSavePath != "" {
 		fmt.Fprintf(&summary, "- 下载路径：%s\n", plan.EffectiveSavePath)
 		fmt.Fprintf(&summary, "- 检测可用空间：%.2f GiB\n", bytesAsGiB(plan.InitialFreeSpaceBytes))
 		fmt.Fprintf(&summary, "- 下载后保留空间：至少 %.2f GiB（预计 %.2f GiB）\n", bytesAsGiB(plan.MinFreeSpaceBytes), bytesAsGiB(plan.ProjectedFreeSpaceBytes))
+	}
+	for _, torrent := range plan.RemoveExpired {
+		fmt.Fprintf(&summary, "  立即清理 hash=%s name=%q downloaded=%.2f GiB state=%s\n", torrent.Hash, torrent.Name, bytesAsGiB(torrent.CompletedBytes), torrent.State)
 	}
 	for _, download := range plan.Downloads {
 		for _, torrent := range download.DeleteBefore {

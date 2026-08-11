@@ -87,13 +87,14 @@ func (e *Executor) Execute(ctx context.Context, plan Plan) error {
 	}
 	if e.logger != nil {
 		level := slog.LevelDebug
-		if len(prepared.tagAsManaged)+len(prepared.unmarkForDeletion)+len(prepared.markForDeletion)+len(prepared.downloads) > 0 {
+		if len(prepared.tagAsManaged)+len(prepared.unmarkForDeletion)+len(prepared.markForDeletion)+len(prepared.removeExpired)+len(prepared.downloads) > 0 {
 			level = slog.LevelInfo
 		}
 		e.logger.Log(ctx, level, "TopFree execution plan accepted",
 			"tag_as_managed", len(prepared.tagAsManaged),
 			"unmark_for_deletion", len(prepared.unmarkForDeletion),
 			"mark_for_deletion", len(prepared.markForDeletion),
+			"remove_expired", len(prepared.removeExpired),
 			"downloads", len(prepared.downloads),
 		)
 	}
@@ -101,6 +102,9 @@ func (e *Executor) Execute(ctx context.Context, plan Plan) error {
 		return err
 	}
 	if err := e.verifyDiskSpaceBeforeWrites(ctx, prepared); err != nil {
+		return err
+	}
+	if err := e.removeExpiredDownloads(ctx, prepared.removeExpired); err != nil {
 		return err
 	}
 
@@ -127,7 +131,7 @@ func (e *Executor) Execute(ctx context.Context, plan Plan) error {
 	}
 	if e.logger != nil {
 		level := slog.LevelDebug
-		if len(prepared.tagAsManaged)+len(prepared.unmarkForDeletion)+len(prepared.markForDeletion)+len(prepared.downloads) > 0 {
+		if len(prepared.tagAsManaged)+len(prepared.unmarkForDeletion)+len(prepared.markForDeletion)+len(prepared.removeExpired)+len(prepared.downloads) > 0 {
 			level = slog.LevelInfo
 		}
 		e.logger.Log(ctx, level, "TopFree execution plan completed")
@@ -139,6 +143,7 @@ type preparedExecutionPlan struct {
 	tagAsManaged      []domain.TorrentHash
 	unmarkForDeletion []domain.TorrentHash
 	markForDeletion   []domain.TorrentHash
+	removeExpired     []domain.ManagedTorrent
 	downloads         []preparedDownload
 	effectiveSavePath string
 	minFreeSpaceBytes int64
@@ -180,6 +185,15 @@ func prepareExecutionPlan(plan Plan) (*preparedExecutionPlan, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidPlan, err)
 	}
+	normalizedExpired, err := normalizeManaged(plan.RemoveExpired)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidPlan, err)
+	}
+	for _, torrent := range normalizedExpired {
+		if !isIncomplete(torrent) {
+			return nil, fmt.Errorf("%w: RemoveExpired contains completed torrent %s", ErrInvalidPlan, torrent.Hash)
+		}
+	}
 
 	roles := make(map[domain.TorrentHash]string)
 	if err := addExecutionRoles(roles, tagAsManaged, "TagAsManaged", ""); err != nil {
@@ -201,11 +215,17 @@ func prepareExecutionPlan(plan Plan) (*preparedExecutionPlan, error) {
 			return nil, err
 		}
 	}
+	for _, torrent := range normalizedExpired {
+		if err := addExecutionRoles(roles, []domain.TorrentHash{torrent.Hash}, "RemoveExpired", ""); err != nil {
+			return nil, err
+		}
+	}
 
 	prepared := &preparedExecutionPlan{
 		tagAsManaged:      tagAsManaged,
 		unmarkForDeletion: unmarkForDeletion,
 		markForDeletion:   markForDeletion,
+		removeExpired:     normalizedExpired,
 		downloads:         make([]preparedDownload, len(normalizedCandidates)),
 		effectiveSavePath: strings.TrimSpace(plan.EffectiveSavePath),
 		minFreeSpaceBytes: plan.MinFreeSpaceBytes,
@@ -333,6 +353,11 @@ func (e *Executor) verifyDiskSpaceBeforeWrites(ctx context.Context, plan *prepar
 		return err
 	}
 	projectedFree := space.FreeBytes
+	for _, torrent := range plan.removeExpired {
+		if sameDiskPath(torrent.SavePath, space.Path) {
+			projectedFree = saturatingAdd(projectedFree, torrent.CompletedBytes)
+		}
+	}
 	for _, download := range plan.downloads {
 		for _, torrent := range download.deleteBefore {
 			if sameDiskPath(torrent.SavePath, space.Path) {
@@ -351,6 +376,35 @@ func (e *Executor) verifyDiskSpaceBeforeWrites(ctx context.Context, plan *prepar
 	}
 	if projectedFree < required {
 		return diskSpaceError(space.Path, projectedFree, required, e.minFreeSpaceBytes)
+	}
+	return nil
+}
+
+func (e *Executor) removeExpiredDownloads(ctx context.Context, torrents []domain.ManagedTorrent) error {
+	if len(torrents) == 0 {
+		return nil
+	}
+	hashes := make([]domain.TorrentHash, len(torrents))
+	for index, torrent := range torrents {
+		hashes[index] = torrent.Hash
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if e.logger != nil {
+		e.logger.WarnContext(ctx, "stopping downloads no longer TopFree", "hashes", hashes)
+	}
+	if err := e.client.Pause(ctx, hashes); err != nil {
+		return fmt.Errorf("stop downloads no longer TopFree: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if e.logger != nil {
+		e.logger.WarnContext(ctx, "deleting downloads no longer TopFree", "hashes", hashes, "delete_files", true)
+	}
+	if err := e.client.Delete(ctx, hashes, true); err != nil {
+		return fmt.Errorf("delete downloads no longer TopFree: %w", err)
 	}
 	return nil
 }

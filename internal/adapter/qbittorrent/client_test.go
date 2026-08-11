@@ -35,7 +35,7 @@ func TestClientListByTag(t *testing.T) {
 		}
 		assertAuthenticatedRequest(t, request)
 		response.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(response, `[{"hash":%q,"name":"Fixture","size":2048,"completed":1024,"added_on":1720000000,"save_path":"/downloads","tags":"sc, toDel"}]`, fixtureHashOne)
+		fmt.Fprintf(response, `[{"hash":%q,"name":"Fixture","size":2048,"completed":1024,"amount_left":1024,"state":"downloading","added_on":1720000000,"save_path":"/downloads","tags":"sc, toDel"}]`, fixtureHashOne)
 	}))
 	defer server.Close()
 
@@ -48,7 +48,7 @@ func TestClientListByTag(t *testing.T) {
 		t.Fatalf("len(torrents) = %d, want 1", len(torrents))
 	}
 	torrent := torrents[0]
-	if torrent.Hash != fixtureHashOne || torrent.Name != "Fixture" || torrent.SizeBytes != 2048 || torrent.CompletedBytes != 1024 || torrent.SavePath != "/downloads" {
+	if torrent.Hash != fixtureHashOne || torrent.Name != "Fixture" || torrent.SizeBytes != 2048 || torrent.CompletedBytes != 1024 || torrent.AmountLeftBytes != 1024 || torrent.State != "downloading" || torrent.SavePath != "/downloads" {
 		t.Errorf("unexpected torrent: %+v", torrent)
 	}
 	if !torrent.AddedAt.Equal(time.Unix(1720000000, 0)) {

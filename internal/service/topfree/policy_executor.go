@@ -100,5 +100,6 @@ func planHasWrites(plan Plan) bool {
 	return len(plan.TagAsManaged) > 0 ||
 		len(plan.UnmarkForDeletion) > 0 ||
 		len(plan.MarkForDeletion) > 0 ||
+		len(plan.RemoveExpired) > 0 ||
 		len(plan.Downloads) > 0
 }

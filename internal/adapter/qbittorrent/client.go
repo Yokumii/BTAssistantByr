@@ -256,13 +256,15 @@ func (c *Client) list(ctx context.Context, query url.Values) ([]domain.ManagedTo
 	defer response.Body.Close()
 
 	var payload []struct {
-		Hash      string `json:"hash"`
-		Name      string `json:"name"`
-		Size      int64  `json:"size"`
-		Completed int64  `json:"completed"`
-		AddedOn   int64  `json:"added_on"`
-		SavePath  string `json:"save_path"`
-		Tags      string `json:"tags"`
+		Hash       string `json:"hash"`
+		Name       string `json:"name"`
+		Size       int64  `json:"size"`
+		Completed  int64  `json:"completed"`
+		AmountLeft int64  `json:"amount_left"`
+		State      string `json:"state"`
+		AddedOn    int64  `json:"added_on"`
+		SavePath   string `json:"save_path"`
+		Tags       string `json:"tags"`
 	}
 	decoder := json.NewDecoder(io.LimitReader(response.Body, maxTorrentListSize))
 	if err := decoder.Decode(&payload); err != nil {
@@ -274,17 +276,19 @@ func (c *Client) list(ctx context.Context, query url.Values) ([]domain.ManagedTo
 
 	torrents := make([]domain.ManagedTorrent, 0, len(payload))
 	for _, item := range payload {
-		if !torrentHashPattern.MatchString(item.Hash) || strings.TrimSpace(item.Name) == "" || item.Size < 0 || item.Completed < 0 || item.Completed > item.Size || item.AddedOn < 0 {
+		if !torrentHashPattern.MatchString(item.Hash) || strings.TrimSpace(item.Name) == "" || item.Size < 0 || item.Completed < 0 || item.Completed > item.Size || item.AmountLeft < 0 || strings.TrimSpace(item.State) == "" || item.AddedOn < 0 {
 			return nil, ErrInvalidResponse
 		}
 		torrents = append(torrents, domain.ManagedTorrent{
-			Hash:           domain.TorrentHash(strings.ToLower(item.Hash)),
-			Name:           item.Name,
-			SizeBytes:      item.Size,
-			CompletedBytes: item.Completed,
-			AddedAt:        time.Unix(item.AddedOn, 0),
-			SavePath:       item.SavePath,
-			Tags:           splitTags(item.Tags),
+			Hash:            domain.TorrentHash(strings.ToLower(item.Hash)),
+			Name:            item.Name,
+			SizeBytes:       item.Size,
+			CompletedBytes:  item.Completed,
+			AmountLeftBytes: item.AmountLeft,
+			State:           strings.TrimSpace(item.State),
+			AddedAt:         time.Unix(item.AddedOn, 0),
+			SavePath:        item.SavePath,
+			Tags:            splitTags(item.Tags),
 		})
 	}
 	return torrents, nil

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/Yokumii/BTAssistantByr/internal/domain"
 )
@@ -68,6 +69,64 @@ func TestCoordinatorReturnsPlanWhenExecutionFails(t *testing.T) {
 		t.Fatalf("RunOnce() error = %v, want mutation error", err)
 	}
 	assertHashes(t, plan.TagAsManaged, torrentHash(1))
+}
+
+func TestCoordinatorAdvancesQueueOnlyAfterCurrentDownloadCompletes(t *testing.T) {
+	t.Parallel()
+
+	first := candidate(1, 100, 1, 1)
+	first.FreeUntil = fixtureTime.Add(20 * time.Hour)
+	second := candidate(2, 30, 1, 1)
+	second.FreeUntil = fixtureTime.Add(5 * time.Hour)
+	source := &fakeManagedSource{}
+	executor := &fakePlanExecutor{}
+	coordinator, err := NewCoordinator(source, executor, 1000, 10, "/downloads")
+	if err != nil {
+		t.Fatalf("NewCoordinator() error = %v", err)
+	}
+	coordinator.now = func() time.Time { return fixtureTime }
+	candidates := []domain.Candidate{second, first}
+
+	firstPlan, err := coordinator.RunOnce(context.Background(), candidates)
+	if err != nil {
+		t.Fatalf("first RunOnce() error = %v", err)
+	}
+	if len(firstPlan.Downloads) != 1 || firstPlan.Downloads[0].Candidate.Hash != first.Hash {
+		t.Fatalf("first downloads = %+v", firstPlan.Downloads)
+	}
+
+	pendingPlan, err := coordinator.RunOnce(context.Background(), candidates)
+	if err != nil {
+		t.Fatalf("pending RunOnce() error = %v", err)
+	}
+	if len(pendingPlan.Downloads) != 0 {
+		t.Fatalf("pending downloads = %+v", pendingPlan.Downloads)
+	}
+
+	active := managedTorrent(1, first.SizeBytes, 1, ManagedTag)
+	active.CompletedBytes = 40
+	active.AmountLeftBytes = 60
+	active.State = "downloading"
+	source.torrents = []domain.ManagedTorrent{active}
+	activePlan, err := coordinator.RunOnce(context.Background(), candidates)
+	if err != nil {
+		t.Fatalf("active RunOnce() error = %v", err)
+	}
+	if len(activePlan.Downloads) != 0 {
+		t.Fatalf("active downloads = %+v", activePlan.Downloads)
+	}
+
+	active.CompletedBytes = active.SizeBytes
+	active.AmountLeftBytes = 0
+	active.State = "stalledUP"
+	source.torrents = []domain.ManagedTorrent{active}
+	nextPlan, err := coordinator.RunOnce(context.Background(), candidates)
+	if err != nil {
+		t.Fatalf("completed RunOnce() error = %v", err)
+	}
+	if len(nextPlan.Downloads) != 1 || nextPlan.Downloads[0].Candidate.Hash != second.Hash {
+		t.Fatalf("next downloads = %+v", nextPlan.Downloads)
+	}
 }
 
 func TestCoordinatorStopsWhenSnapshotFails(t *testing.T) {
@@ -178,9 +237,11 @@ func (source *fakeManagedSource) ListAll(context.Context) ([]domain.ManagedTorre
 type fakePlanExecutor struct {
 	calls int
 	err   error
+	plans []Plan
 }
 
-func (executor *fakePlanExecutor) Execute(context.Context, Plan) error {
+func (executor *fakePlanExecutor) Execute(_ context.Context, plan Plan) error {
 	executor.calls++
+	executor.plans = append(executor.plans, plan)
 	return executor.err
 }
