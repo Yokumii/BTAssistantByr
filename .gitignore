@@ -13,6 +13,9 @@
 /config/*.local.yaml
 .env
 
+# Local agent instructions
+/AGENTS.md
+
 # Editors and operating systems
 .DS_Store
 .idea/

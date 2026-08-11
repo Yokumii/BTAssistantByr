@@ -219,28 +219,10 @@ BYR 刷新成功后会立即检查一次队列。刷新重试仍失败时，旧�
 
 回收时先按添加时间从早到晚选择，直到逻辑容量和真实可用空间都满足下载要求；随后从已选列表末尾反向撤销仍可省略的删除项，尽量减少删除数量。这不是全局组合搜索，但能避免直接删除整个时间前缀。
 
-## 常见问题
-
-### BYR 请求出现 `TLS handshake timeout`
-
-程序会按照 `network_retry_count` 自动重试。持续失败时请检查 `tracker.proxy_url`、本机代理端口和代理是否允许访问 BYR。刷新重试耗尽只会跳过本轮，不会使用旧快照执行操作。
-
-### 出现 `BYR session expired`
-
-新版本会自动使用 `tracker.username` 和 `tracker.password` 重新登录。请确认正在使用较新的 Release，并检查用户名密码是否有效。明确的认证拒绝仍会终止程序并记录错误。
-
-### 删除后空间没有立即增加
-
-Windows/qBittorrent 可能仍在异步删除文件。程序最多等待 30 秒，期间不会添加新种子；超时后交给下一次队列检查继续处理。以 qBittorrent 所在下载盘的真实可用空间为准。
-
-### qBittorrent 无法查询指定路径空间
-
-较旧的 Web API 只能查询默认下载盘。请升级 qBittorrent，或者将 `client.save_path` 留空并使用 qBittorrent 默认下载路径。程序不会使用运行 BTAssistantByr 的宿主机空间代替远端 qBittorrent 空间。
-
-### 如何提交问题
+## 如何提交问题
 
 请使用仓库的 [Bug 报告模板](https://github.com/Yokumii/BTAssistantByr/issues/new/choose)，附上版本、系统、qBittorrent 版本、脱敏配置和 DEBUG 日志。提交前务必删除用户名、密码、Cookie、SID、passkey 和私有下载 URL。
 
 ## 许可
 
-本项目基于 [BYRBT_RyukawaChihiro](https://github.com/LetMeFly666/BYRBT_RyukawaChihiro) 进行 Go 语言二次开发，沿用 MIT License，并保留原作者版权声明，详见 [LICENSE](LICENSE)。
+本项目参考了 [BYRBT_RyukawaChihiro](https://github.com/LetMeFly666/BYRBT_RyukawaChihiro) 项目，许可沿用 MIT License，详见 [LICENSE](LICENSE)。
