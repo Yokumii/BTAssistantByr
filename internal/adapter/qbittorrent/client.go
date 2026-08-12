@@ -189,7 +189,7 @@ func (c *Client) defaultFreeSpace(ctx context.Context) (int64, error) {
 	}
 	decoder := json.NewDecoder(io.LimitReader(response.Body, maxTorrentListSize))
 	if err := decoder.Decode(&payload); err != nil {
-		return 0, fmt.Errorf("%w: %v", ErrInvalidResponse, err)
+		return 0, fmt.Errorf("%w: %w", ErrInvalidResponse, err)
 	}
 	if err := ensureJSONEnd(decoder); err != nil {
 		return 0, err
@@ -208,7 +208,7 @@ func (c *Client) getText(ctx context.Context, path string, query url.Values) (st
 	defer response.Body.Close()
 	contents, err := io.ReadAll(io.LimitReader(response.Body, maxTextResponseSize+1))
 	if err != nil {
-		return "", fmt.Errorf("%w: %v", ErrInvalidResponse, err)
+		return "", fmt.Errorf("%w: %w", ErrInvalidResponse, err)
 	}
 	if len(contents) > maxTextResponseSize {
 		return "", ErrInvalidResponse
@@ -269,7 +269,7 @@ func (c *Client) list(ctx context.Context, query url.Values) ([]domain.ManagedTo
 	}
 	decoder := json.NewDecoder(io.LimitReader(response.Body, maxTorrentListSize))
 	if err := decoder.Decode(&payload); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidResponse, err)
+		return nil, fmt.Errorf("%w: %w", ErrInvalidResponse, err)
 	}
 	if err := ensureJSONEnd(decoder); err != nil {
 		return nil, err

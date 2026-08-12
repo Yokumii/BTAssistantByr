@@ -151,7 +151,7 @@ func (a *Authenticator) Login(ctx context.Context, username, password string) (C
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, maxResponseSize)).Decode(&result); err != nil {
-		return Credential{}, fmt.Errorf("%w: %v", ErrInvalidResponse, err)
+		return Credential{}, fmt.Errorf("%w: %w", ErrInvalidResponse, err)
 	}
 	if !result.Success || result.Code != http.StatusOK || strings.TrimSpace(result.Data.AuthToken) == "" {
 		return Credential{}, ErrAuthenticationFailed

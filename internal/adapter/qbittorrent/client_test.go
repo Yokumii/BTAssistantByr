@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -85,6 +86,44 @@ func TestClientListAll(t *testing.T) {
 	if len(torrents) != 0 {
 		t.Fatalf("len(torrents) = %d, want 0", len(torrents))
 	}
+}
+
+func TestClientPreservesResponseBodyTimeout(t *testing.T) {
+	t.Parallel()
+
+	httpClient := &http.Client{Transport: qbitRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(qbitDeadlineReader{}),
+			Request:    request,
+		}, nil
+	})}
+	authenticator, err := NewAuthenticator("http://qbit.example", httpClient)
+	if err != nil {
+		t.Fatalf("NewAuthenticator() error = %v", err)
+	}
+	client, err := authenticator.NewClient(Credential{CookieName: legacySessionCookie, SID: "fixture"})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	_, err = client.ListAll(context.Background())
+	if !errors.Is(err, ErrInvalidResponse) || !errors.Is(err, context.DeadlineExceeded) || !netretry.IsTransient(err) {
+		t.Fatalf("qBittorrent response timeout was not preserved: %v", err)
+	}
+}
+
+type qbitRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (run qbitRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return run(request)
+}
+
+type qbitDeadlineReader struct{}
+
+func (qbitDeadlineReader) Read([]byte) (int, error) {
+	return 0, context.DeadlineExceeded
 }
 
 func TestClientFreeSpaceAtConfiguredPath(t *testing.T) {

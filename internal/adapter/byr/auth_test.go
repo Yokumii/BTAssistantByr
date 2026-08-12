@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -187,6 +188,28 @@ func TestAuthenticatorLoginRejectsInvalidJSON(t *testing.T) {
 	_, err = authenticator.Login(context.Background(), "alice", "secret")
 	if !errors.Is(err, ErrInvalidResponse) {
 		t.Fatalf("unexpected error: got %v, want %v", err, ErrInvalidResponse)
+	}
+}
+
+func TestAuthenticatorLoginPreservesResponseBodyTimeout(t *testing.T) {
+	t.Parallel()
+
+	httpClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(deadlineReader{}),
+			Request:    request,
+		}, nil
+	})}
+	authenticator, err := NewAuthenticator("https://byr.example", httpClient)
+	if err != nil {
+		t.Fatalf("NewAuthenticator() error = %v", err)
+	}
+	_, err = authenticator.Login(context.Background(), "alice", "secret")
+	if !errors.Is(err, ErrInvalidResponse) || !errors.Is(err, context.DeadlineExceeded) || !netretry.IsTransient(err) {
+		t.Fatalf("login response timeout was not preserved: %v", err)
 	}
 }
 

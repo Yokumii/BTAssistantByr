@@ -4,13 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/Yokumii/BTAssistantByr/internal/domain"
+	"github.com/Yokumii/BTAssistantByr/internal/netretry"
 )
 
 func TestClientListTopFreeAuthenticatesAndCachesHash(t *testing.T) {
@@ -63,6 +66,103 @@ func TestClientListTopFreeAuthenticatesAndCachesHash(t *testing.T) {
 	}
 	if got := detailRequests.Load(); got != 1 {
 		t.Errorf("details requests = %d, want 1", got)
+	}
+}
+
+func TestClientRetriesBYRResponseBodyTimeouts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		failurePath      string
+		run              func(*netretry.Tracker) error
+		wantPathRequests int
+	}{
+		{
+			name:        "TopFree list",
+			failurePath: "/tracker/torrents.php",
+			run: func(tracker *netretry.Tracker) error {
+				_, err := tracker.ListTopFree(context.Background())
+				return err
+			},
+			wantPathRequests: 2,
+		},
+		{
+			name:        "torrent details",
+			failurePath: "/tracker/details.php",
+			run: func(tracker *netretry.Tracker) error {
+				_, err := tracker.ListTopFree(context.Background())
+				return err
+			},
+			wantPathRequests: 2,
+		},
+		{
+			name:        "passkey page",
+			failurePath: "/tracker/usercp.php",
+			run: func(tracker *netretry.Tracker) error {
+				_, err := tracker.DownloadURL(context.Background(), "362950")
+				return err
+			},
+			wantPathRequests: 2,
+		},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			requests := make(map[string]int)
+			httpClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				requests[request.URL.Path]++
+				var body io.ReadCloser
+				if request.URL.Path == test.failurePath && requests[request.URL.Path] == 1 {
+					body = io.NopCloser(deadlineReader{})
+				} else {
+					body = io.NopCloser(strings.NewReader(byrResponseFixture(request.URL.Path)))
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header:     make(http.Header),
+					Body:       body,
+					Request:    request,
+				}, nil
+			})}
+			authenticator, err := NewAuthenticator("https://byr.example/tracker", httpClient)
+			if err != nil {
+				t.Fatalf("NewAuthenticator() error = %v", err)
+			}
+			client, err := authenticator.NewClient(Credential{AuthToken: "auth-value"})
+			if err != nil {
+				t.Fatalf("NewClient() error = %v", err)
+			}
+			tracker := netretry.NewTracker(client, netretry.Policy{Retries: 1})
+			if err := test.run(tracker); err != nil {
+				t.Fatalf("operation error = %v", err)
+			}
+			if got := requests[test.failurePath]; got != test.wantPathRequests {
+				t.Fatalf("requests to %s = %d, want %d", test.failurePath, got, test.wantPathRequests)
+			}
+		})
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (run roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return run(request)
+}
+
+func byrResponseFixture(path string) string {
+	switch path {
+	case "/tracker/torrents.php":
+		return torrentPageFixture("1.50 GiB", "12", "3")
+	case "/tracker/details.php":
+		return "<p>Hash码 0123456789abcdef0123456789abcdef01234567</p>"
+	case "/tracker/usercp.php":
+		return "<table><tr><td>passkey</td><td>0123456789abcdef0123456789abcdef</td></tr></table>"
+	default:
+		return ""
 	}
 }
 

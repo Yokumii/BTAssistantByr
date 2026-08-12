@@ -39,7 +39,7 @@ var byrLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
 func parseTopFree(reader io.Reader) ([]domain.Candidate, error) {
 	document, err := html.Parse(reader)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidTorrentPage, err)
+		return nil, fmt.Errorf("%w: %w", ErrInvalidTorrentPage, err)
 	}
 	table := findElement(document, "table", func(node *html.Node) bool {
 		return hasClass(node, "torrents")
@@ -106,7 +106,7 @@ func parseCandidate(row *html.Node) (domain.Candidate, error) {
 
 	sizeBytes, err := parseSizeBytes(normalizedText(cells[5]))
 	if err != nil {
-		return domain.Candidate{}, fmt.Errorf("%w: torrent %s: %v", ErrInvalidTorrentPage, torrentID, err)
+		return domain.Candidate{}, fmt.Errorf("%w: torrent %s: %w", ErrInvalidTorrentPage, torrentID, err)
 	}
 	seeders, err := parseCount(normalizedText(cells[6]))
 	if err != nil {
@@ -130,7 +130,7 @@ func parseCandidate(row *html.Node) (domain.Candidate, error) {
 func parseTorrentHash(reader io.Reader) (domain.TorrentHash, error) {
 	document, err := html.Parse(reader)
 	if err != nil {
-		return "", fmt.Errorf("%w: %v", ErrTorrentHashNotFound, err)
+		return "", fmt.Errorf("%w: %w", ErrTorrentHashNotFound, err)
 	}
 	pageText := normalizedText(document)
 	labelIndex := strings.Index(pageText, "Hash码")
@@ -152,7 +152,7 @@ func parseTorrentHash(reader io.Reader) (domain.TorrentHash, error) {
 func parsePasskey(reader io.Reader) (string, error) {
 	document, err := html.Parse(reader)
 	if err != nil {
-		return "", fmt.Errorf("%w: %v", ErrPasskeyNotFound, err)
+		return "", fmt.Errorf("%w: %w", ErrPasskeyNotFound, err)
 	}
 	label := findElement(document, "td", func(node *html.Node) bool {
 		return strings.EqualFold(normalizedText(node), "passkey")
