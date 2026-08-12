@@ -1,0 +1,326 @@
+package topfree
+
+import (
+	"errors"
+	"fmt"
+	"math"
+	"reflect"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/Yokumii/BTAssistantByr/internal/domain"
+)
+
+var fixtureTime = time.Date(2026, time.August, 10, 12, 0, 0, 0, time.UTC)
+
+func TestBuildPlanSynchronizesTagsAndAddsNewCandidate(t *testing.T) {
+	t.Parallel()
+
+	candidates := []domain.Candidate{
+		candidate(1, 100, 1, 1),
+		candidate(2, 200, 1, 1),
+		candidate(3, 100, 1, 1),
+	}
+	managed := []domain.ManagedTorrent{
+		managedTorrent(1, 100, 1, ManagedTag, DeleteTag),
+		managedTorrent(2, 200, 2),
+		managedTorrent(4, 300, 3, ManagedTag),
+		managedTorrent(5, 400, 4, DeleteTag),
+	}
+
+	plan, err := BuildPlan(1000, candidates, managed)
+	if err != nil {
+		t.Fatalf("BuildPlan() error = %v", err)
+	}
+	assertHashes(t, plan.TagAsManaged, torrentHash(2))
+	assertHashes(t, plan.UnmarkForDeletion, torrentHash(1))
+	assertHashes(t, plan.MarkForDeletion, torrentHash(4))
+	if len(plan.Downloads) != 1 || plan.Downloads[0].Candidate.Hash != torrentHash(3) || len(plan.Downloads[0].DeleteBefore) != 0 {
+		t.Fatalf("Downloads = %+v", plan.Downloads)
+	}
+	if len(plan.Skipped) != 0 {
+		t.Errorf("Skipped = %+v", plan.Skipped)
+	}
+	if plan.CurrentDiskUsageBytes != 600 || plan.ProjectedDiskUsageBytes != 700 {
+		t.Errorf("disk usage = (%d, %d), want (600, 700)", plan.CurrentDiskUsageBytes, plan.ProjectedDiskUsageBytes)
+	}
+}
+
+func TestBuildPlanDeletesOldestPrefixBeforeDownload(t *testing.T) {
+	t.Parallel()
+
+	candidates := []domain.Candidate{
+		candidate(1, 40, 1, 1),
+		candidate(3, 40, 1, 1),
+	}
+	managed := []domain.ManagedTorrent{
+		managedTorrent(1, 40, 3, ManagedTag),
+		managedTorrent(4, 20, 1, ManagedTag),
+		managedTorrent(5, 30, 2, ManagedTag),
+	}
+
+	plan, err := BuildPlan(100, candidates, managed)
+	if err != nil {
+		t.Fatalf("BuildPlan() error = %v", err)
+	}
+	if len(plan.Downloads) != 1 {
+		t.Fatalf("len(Downloads) = %d, want 1", len(plan.Downloads))
+	}
+	deletions := plan.Downloads[0].DeleteBefore
+	if len(deletions) != 2 || deletions[0].Hash != torrentHash(4) || deletions[1].Hash != torrentHash(5) {
+		t.Errorf("DeleteBefore = %+v", deletions)
+	}
+	if len(plan.MarkForDeletion) != 0 {
+		t.Errorf("deleted torrents were also marked: %v", plan.MarkForDeletion)
+	}
+	if plan.CurrentDiskUsageBytes != 90 || plan.ProjectedDiskUsageBytes != 80 {
+		t.Errorf("disk usage = (%d, %d), want (90, 80)", plan.CurrentDiskUsageBytes, plan.ProjectedDiskUsageBytes)
+	}
+}
+
+func TestBuildPlanNeverDeletesCurrentTopFree(t *testing.T) {
+	t.Parallel()
+
+	plan, err := BuildPlan(
+		100,
+		[]domain.Candidate{candidate(1, 90, 1, 1), candidate(2, 20, 1, 1)},
+		[]domain.ManagedTorrent{managedTorrent(1, 90, 1, ManagedTag, DeleteTag)},
+	)
+	if err != nil {
+		t.Fatalf("BuildPlan() error = %v", err)
+	}
+	assertHashes(t, plan.UnmarkForDeletion, torrentHash(1))
+	if len(plan.Downloads) != 0 {
+		t.Fatalf("Downloads = %+v, want none", plan.Downloads)
+	}
+	if len(plan.Skipped) != 1 || plan.Skipped[0].Candidate.Hash != torrentHash(2) || plan.Skipped[0].AvailableBytes != 10 {
+		t.Fatalf("Skipped = %+v", plan.Skipped)
+	}
+}
+
+func TestBuildPlanIgnoresUnmanagedDeleteTag(t *testing.T) {
+	t.Parallel()
+
+	plan, err := BuildPlan(
+		100,
+		[]domain.Candidate{candidate(1, 90, 1, 1), candidate(2, 20, 1, 1)},
+		[]domain.ManagedTorrent{
+			managedTorrent(1, 90, 1, ManagedTag),
+			managedTorrent(9, 100, 2, DeleteTag),
+		},
+	)
+	if err != nil {
+		t.Fatalf("BuildPlan() error = %v", err)
+	}
+	if len(plan.Downloads) != 0 || len(plan.Skipped) != 1 {
+		t.Fatalf("unexpected capacity decision: %+v", plan)
+	}
+	if plan.CurrentDiskUsageBytes != 90 || plan.Skipped[0].AvailableBytes != 10 {
+		t.Errorf("unmanaged torrent affected capacity: %+v", plan)
+	}
+}
+
+func TestBuildPlanOrdersCandidatesByPeerDemand(t *testing.T) {
+	t.Parallel()
+
+	candidates := []domain.Candidate{
+		candidate(1, 10, 10, 10),
+		candidate(2, 10, 2, 6),
+		candidate(3, 10, 0, 100),
+	}
+	plan, err := BuildPlan(100, candidates, nil)
+	if err != nil {
+		t.Fatalf("BuildPlan() error = %v", err)
+	}
+	if len(plan.Downloads) != 3 {
+		t.Fatalf("len(Downloads) = %d, want 3", len(plan.Downloads))
+	}
+	want := []domain.TorrentHash{torrentHash(2), torrentHash(1), torrentHash(3)}
+	for index, download := range plan.Downloads {
+		if download.Candidate.Hash != want[index] {
+			t.Errorf("Downloads[%d] hash = %s, want %s", index, download.Candidate.Hash, want[index])
+		}
+	}
+}
+
+func TestBuildPlanDoesNotConsumeCleanupForSkippedCandidate(t *testing.T) {
+	t.Parallel()
+
+	large := candidate(1, 120, 1, 100)
+	small := candidate(2, 80, 1, 1)
+	stale := managedTorrent(9, 50, 1, ManagedTag)
+	plan, err := BuildPlan(100, []domain.Candidate{small, large}, []domain.ManagedTorrent{stale})
+	if err != nil {
+		t.Fatalf("BuildPlan() error = %v", err)
+	}
+	if len(plan.Skipped) != 1 || plan.Skipped[0].Candidate.Hash != large.Hash || plan.Skipped[0].AvailableBytes != 100 {
+		t.Fatalf("Skipped = %+v", plan.Skipped)
+	}
+	if len(plan.Downloads) != 1 || plan.Downloads[0].Candidate.Hash != small.Hash {
+		t.Fatalf("Downloads = %+v", plan.Downloads)
+	}
+	if len(plan.Downloads[0].DeleteBefore) != 1 || plan.Downloads[0].DeleteBefore[0].Hash != stale.Hash {
+		t.Fatalf("DeleteBefore = %+v", plan.Downloads[0].DeleteBefore)
+	}
+	if plan.ProjectedDiskUsageBytes != 80 {
+		t.Errorf("ProjectedDiskUsageBytes = %d, want 80", plan.ProjectedDiskUsageBytes)
+	}
+}
+
+func TestBuildPlanIsDeterministic(t *testing.T) {
+	t.Parallel()
+
+	candidates := []domain.Candidate{candidate(1, 40, 1, 1), candidate(2, 30, 2, 3), candidate(3, 20, 0, 4)}
+	managed := []domain.ManagedTorrent{managedTorrent(8, 30, 2, ManagedTag), managedTorrent(9, 40, 1, ManagedTag)}
+	first, err := BuildPlan(80, candidates, managed)
+	if err != nil {
+		t.Fatalf("BuildPlan() error = %v", err)
+	}
+	second, err := BuildPlan(80, reverseCandidates(candidates), reverseManaged(managed))
+	if err != nil {
+		t.Fatalf("BuildPlan() reversed error = %v", err)
+	}
+	if !reflect.DeepEqual(first, second) {
+		t.Errorf("plans differ by input order:\nfirst:  %+v\nsecond: %+v", first, second)
+	}
+}
+
+func TestBuildPlanLocalMultiRoundSimulation(t *testing.T) {
+	t.Parallel()
+
+	firstCandidate := candidate(1, 100, 1, 10)
+	secondCandidate := candidate(2, 60, 1, 1)
+	firstRound, err := BuildPlan(150, []domain.Candidate{secondCandidate, firstCandidate}, nil)
+	if err != nil {
+		t.Fatalf("first BuildPlan() error = %v", err)
+	}
+	if len(firstRound.Downloads) != 1 || firstRound.Downloads[0].Candidate.Hash != firstCandidate.Hash || len(firstRound.Skipped) != 1 || firstRound.Skipped[0].Candidate.Hash != secondCandidate.Hash {
+		t.Fatalf("unexpected first round: %+v", firstRound)
+	}
+
+	simulatedClient := []domain.ManagedTorrent{
+		managedTorrent(1, firstCandidate.SizeBytes, 1, ManagedTag),
+	}
+	secondRound, err := BuildPlan(150, []domain.Candidate{secondCandidate}, simulatedClient)
+	if err != nil {
+		t.Fatalf("second BuildPlan() error = %v", err)
+	}
+	if len(secondRound.Downloads) != 1 || secondRound.Downloads[0].Candidate.Hash != secondCandidate.Hash {
+		t.Fatalf("unexpected second round download: %+v", secondRound.Downloads)
+	}
+	if len(secondRound.Downloads[0].DeleteBefore) != 1 || secondRound.Downloads[0].DeleteBefore[0].Hash != firstCandidate.Hash {
+		t.Fatalf("unexpected second round cleanup: %+v", secondRound.Downloads[0].DeleteBefore)
+	}
+	if secondRound.ProjectedDiskUsageBytes != 60 {
+		t.Errorf("second round projected usage = %d, want 60", secondRound.ProjectedDiskUsageBytes)
+	}
+}
+
+func TestBuildPlanValidatesInput(t *testing.T) {
+	t.Parallel()
+
+	validCandidate := candidate(1, 10, 1, 1)
+	validManaged := managedTorrent(8, 10, 1, ManagedTag)
+	tests := []struct {
+		name       string
+		limit      int64
+		candidates []domain.Candidate
+		managed    []domain.ManagedTorrent
+		wantErr    error
+	}{
+		{name: "invalid limit", candidates: []domain.Candidate{validCandidate}, wantErr: ErrInvalidDiskLimit},
+		{name: "invalid candidate", limit: 100, candidates: []domain.Candidate{{}}, wantErr: ErrInvalidCandidate},
+		{name: "duplicate candidate hash", limit: 100, candidates: []domain.Candidate{validCandidate, candidateWithID(validCandidate, 2)}, wantErr: ErrDuplicateCandidate},
+		{name: "duplicate candidate ID", limit: 100, candidates: []domain.Candidate{validCandidate, candidateWithHash(validCandidate, torrentHash(2))}, wantErr: ErrDuplicateCandidate},
+		{name: "invalid managed torrent", limit: 100, candidates: []domain.Candidate{validCandidate}, managed: []domain.ManagedTorrent{{}}, wantErr: ErrInvalidManagedTorrent},
+		{name: "duplicate managed torrent", limit: 100, candidates: []domain.Candidate{validCandidate}, managed: []domain.ManagedTorrent{validManaged, validManaged}, wantErr: ErrDuplicateManagedTorrent},
+		{name: "disk usage overflow", limit: 100, candidates: nil, managed: []domain.ManagedTorrent{managedTorrent(8, math.MaxInt64, 1, ManagedTag), managedTorrent(9, 1, 2, ManagedTag)}, wantErr: ErrDiskUsageOverflow},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := BuildPlan(test.limit, test.candidates, test.managed)
+			if !errors.Is(err, test.wantErr) {
+				t.Fatalf("BuildPlan() error = %v, want %v", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestBuildPlanDoesNotMutateInput(t *testing.T) {
+	t.Parallel()
+
+	candidateValue := candidate(1, 10, 1, 1)
+	candidateValue.Hash = domain.TorrentHash(strings.ToUpper(string(candidateValue.Hash)))
+	managedValue := managedTorrent(8, 10, 1, " "+ManagedTag+" ")
+	originalCandidate := candidateValue
+	originalTags := append([]string(nil), managedValue.Tags...)
+	if _, err := BuildPlan(100, []domain.Candidate{candidateValue}, []domain.ManagedTorrent{managedValue}); err != nil {
+		t.Fatalf("BuildPlan() error = %v", err)
+	}
+	if candidateValue != originalCandidate || !reflect.DeepEqual(managedValue.Tags, originalTags) {
+		t.Error("BuildPlan() mutated input")
+	}
+}
+
+func candidate(number int, size int64, seeders, leechers int) domain.Candidate {
+	return domain.Candidate{
+		ID:        domain.TorrentID(strconv.Itoa(number)),
+		Hash:      torrentHash(number),
+		Name:      fmt.Sprintf("candidate-%d", number),
+		SizeBytes: size,
+		Seeders:   seeders,
+		Leechers:  leechers,
+		FreeUntil: fixtureTime.Add(24 * time.Hour),
+	}
+}
+
+func managedTorrent(number int, size int64, addedHours int, tags ...string) domain.ManagedTorrent {
+	return domain.ManagedTorrent{
+		Hash:      torrentHash(number),
+		Name:      fmt.Sprintf("managed-%d", number),
+		SizeBytes: size,
+		AddedAt:   fixtureTime.Add(time.Duration(addedHours) * time.Hour),
+		Tags:      append([]string(nil), tags...),
+	}
+}
+
+func torrentHash(number int) domain.TorrentHash {
+	return domain.TorrentHash(fmt.Sprintf("%040x", number))
+}
+
+func candidateWithID(candidate domain.Candidate, id int) domain.Candidate {
+	candidate.ID = domain.TorrentID(strconv.Itoa(id))
+	return candidate
+}
+
+func candidateWithHash(candidate domain.Candidate, hash domain.TorrentHash) domain.Candidate {
+	candidate.Hash = hash
+	return candidate
+}
+
+func reverseCandidates(values []domain.Candidate) []domain.Candidate {
+	reversed := append([]domain.Candidate(nil), values...)
+	for left, right := 0, len(reversed)-1; left < right; left, right = left+1, right-1 {
+		reversed[left], reversed[right] = reversed[right], reversed[left]
+	}
+	return reversed
+}
+
+func reverseManaged(values []domain.ManagedTorrent) []domain.ManagedTorrent {
+	reversed := append([]domain.ManagedTorrent(nil), values...)
+	for left, right := 0, len(reversed)-1; left < right; left, right = left+1, right-1 {
+		reversed[left], reversed[right] = reversed[right], reversed[left]
+	}
+	return reversed
+}
+
+func assertHashes(t *testing.T, got []domain.TorrentHash, want ...domain.TorrentHash) {
+	t.Helper()
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("hashes = %v, want %v", got, want)
+	}
+}

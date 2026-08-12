@@ -1,0 +1,19 @@
+# Build outputs
+/bin/
+/dist/
+*.test
+*.out
+
+# Local runtime data
+/data/
+/logs/
+
+# Local configuration and secrets
+/config/config.yaml
+/config/*.local.yaml
+.env
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/

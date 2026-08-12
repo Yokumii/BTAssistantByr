@@ -1,0 +1,330 @@
+package topfree
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/Yokumii/BTAssistantByr/internal/domain"
+	"github.com/Yokumii/BTAssistantByr/internal/port"
+)
+
+func TestExecutorAppliesPlanInOrder(t *testing.T) {
+	t.Parallel()
+
+	source := &fakeDownloadSource{}
+	client := &fakeMutationClient{}
+	executor, err := NewExecutor(source, client, " /downloads ")
+	if err != nil {
+		t.Fatalf("NewExecutor() error = %v", err)
+	}
+	plan := Plan{
+		TagAsManaged:      []domain.TorrentHash{torrentHash(1)},
+		UnmarkForDeletion: []domain.TorrentHash{torrentHash(1)},
+		MarkForDeletion:   []domain.TorrentHash{torrentHash(2)},
+		Downloads: []DownloadPlan{
+			{
+				Candidate:    candidate(3, 40, 1, 1),
+				DeleteBefore: []domain.ManagedTorrent{managedTorrent(4, 20, 1, ManagedTag), managedTorrent(5, 30, 2, ManagedTag)},
+			},
+			{Candidate: candidate(6, 10, 1, 1)},
+		},
+	}
+
+	if err := executor.Execute(context.Background(), plan); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !reflect.DeepEqual(source.calls, []domain.TorrentID{"3", "6"}) {
+		t.Errorf("source calls = %v", source.calls)
+	}
+	wantCalls := []mutationCall{
+		{name: "addTags", hashes: hashes(1), tags: []string{ManagedTag}},
+		{name: "removeTags", hashes: hashes(1), tags: []string{DeleteTag}},
+		{name: "addTags", hashes: hashes(2), tags: []string{DeleteTag}},
+		{name: "reannounce", hashes: hashes(4, 5)},
+		{name: "pause", hashes: hashes(4, 5)},
+		{name: "delete", hashes: hashes(4, 5), deleteFiles: true},
+		{name: "add", addRequest: port.AddTorrentRequest{SourceURL: fixtureDownloadURL("3"), SavePath: "/downloads", Tags: []string{ManagedTag}}},
+		{name: "add", addRequest: port.AddTorrentRequest{SourceURL: fixtureDownloadURL("6"), SavePath: "/downloads", Tags: []string{ManagedTag}}},
+	}
+	if !reflect.DeepEqual(client.calls, wantCalls) {
+		t.Errorf("client calls differ:\n got: %#v\nwant: %#v", client.calls, wantCalls)
+	}
+}
+
+func TestExecutorPreflightsAllDownloadsBeforeWrites(t *testing.T) {
+	t.Parallel()
+
+	wantErr := errors.New("tracker unavailable")
+	source := &fakeDownloadSource{failID: "6", err: wantErr}
+	client := &fakeMutationClient{}
+	executor, err := NewExecutor(source, client, "")
+	if err != nil {
+		t.Fatalf("NewExecutor() error = %v", err)
+	}
+	plan := Plan{
+		TagAsManaged: []domain.TorrentHash{torrentHash(1)},
+		Downloads: []DownloadPlan{
+			{Candidate: candidate(3, 10, 1, 1)},
+			{Candidate: candidate(6, 10, 1, 1)},
+		},
+	}
+	err = executor.Execute(context.Background(), plan)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Execute() error = %v, want tracker error", err)
+	}
+	if !reflect.DeepEqual(source.calls, []domain.TorrentID{"3", "6"}) {
+		t.Errorf("source calls = %v", source.calls)
+	}
+	if len(client.calls) != 0 {
+		t.Errorf("client received writes after failed preflight: %#v", client.calls)
+	}
+}
+
+func TestExecutorRejectsInvalidDownloadURLBeforeWrites(t *testing.T) {
+	t.Parallel()
+
+	source := &fakeDownloadSource{urlByID: map[domain.TorrentID]string{"3": "file:///tmp/torrent"}}
+	client := &fakeMutationClient{}
+	executor, err := NewExecutor(source, client, "")
+	if err != nil {
+		t.Fatalf("NewExecutor() error = %v", err)
+	}
+	err = executor.Execute(context.Background(), Plan{
+		MarkForDeletion: []domain.TorrentHash{torrentHash(2)},
+		Downloads:       []DownloadPlan{{Candidate: candidate(3, 10, 1, 1)}},
+	})
+	if !errors.Is(err, ErrInvalidDownloadURL) {
+		t.Fatalf("Execute() error = %v, want ErrInvalidDownloadURL", err)
+	}
+	if len(client.calls) != 0 {
+		t.Errorf("client received writes after invalid URL: %#v", client.calls)
+	}
+}
+
+func TestExecutorStopsOnFirstMutationError(t *testing.T) {
+	t.Parallel()
+
+	wantErr := errors.New("stop failed")
+	source := &fakeDownloadSource{}
+	client := &fakeMutationClient{failOperation: "pause", err: wantErr}
+	executor, err := NewExecutor(source, client, "")
+	if err != nil {
+		t.Fatalf("NewExecutor() error = %v", err)
+	}
+	err = executor.Execute(context.Background(), Plan{Downloads: []DownloadPlan{{
+		Candidate:    candidate(3, 10, 1, 1),
+		DeleteBefore: []domain.ManagedTorrent{managedTorrent(4, 20, 1, ManagedTag)},
+	}}})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Execute() error = %v, want mutation error", err)
+	}
+	wantCalls := []mutationCall{
+		{name: "reannounce", hashes: hashes(4)},
+		{name: "pause", hashes: hashes(4)},
+	}
+	if !reflect.DeepEqual(client.calls, wantCalls) {
+		t.Errorf("client calls = %#v, want %#v", client.calls, wantCalls)
+	}
+}
+
+func TestExecutorRejectsUnsafePlanBeforePreflight(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		plan Plan
+	}{
+		{name: "invalid action hash", plan: Plan{TagAsManaged: []domain.TorrentHash{"all"}}},
+		{name: "duplicate action hash", plan: Plan{TagAsManaged: []domain.TorrentHash{torrentHash(1), torrentHash(1)}}},
+		{name: "mark and unmark conflict", plan: Plan{MarkForDeletion: hashes(1), UnmarkForDeletion: hashes(1)}},
+		{name: "download and delete conflict", plan: Plan{Downloads: []DownloadPlan{
+			{Candidate: candidate(1, 10, 1, 1), DeleteBefore: []domain.ManagedTorrent{managedTorrent(1, 10, 1, ManagedTag)}},
+		}}},
+		{name: "duplicate deletion", plan: Plan{Downloads: []DownloadPlan{
+			{Candidate: candidate(1, 10, 1, 1), DeleteBefore: []domain.ManagedTorrent{managedTorrent(8, 10, 1, ManagedTag)}},
+			{Candidate: candidate(2, 10, 1, 1), DeleteBefore: []domain.ManagedTorrent{managedTorrent(8, 10, 1, ManagedTag)}},
+		}}},
+		{name: "invalid candidate", plan: Plan{Downloads: []DownloadPlan{{Candidate: domain.Candidate{}}}}},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			source := &fakeDownloadSource{}
+			client := &fakeMutationClient{}
+			executor, err := NewExecutor(source, client, "")
+			if err != nil {
+				t.Fatalf("NewExecutor() error = %v", err)
+			}
+			if err := executor.Execute(context.Background(), test.plan); !errors.Is(err, ErrInvalidPlan) {
+				t.Fatalf("Execute() error = %v, want ErrInvalidPlan", err)
+			}
+			if len(source.calls) != 0 || len(client.calls) != 0 {
+				t.Errorf("unsafe plan reached dependencies")
+			}
+		})
+	}
+}
+
+func TestExecutorHonorsCanceledContext(t *testing.T) {
+	t.Parallel()
+
+	source := &fakeDownloadSource{}
+	client := &fakeMutationClient{}
+	executor, err := NewExecutor(source, client, "")
+	if err != nil {
+		t.Fatalf("NewExecutor() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err = executor.Execute(ctx, Plan{Downloads: []DownloadPlan{{Candidate: candidate(1, 10, 1, 1)}}})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Execute() error = %v, want context.Canceled", err)
+	}
+	if len(source.calls) != 0 || len(client.calls) != 0 {
+		t.Error("canceled execution reached dependencies")
+	}
+}
+
+func TestNewExecutorValidatesDependencies(t *testing.T) {
+	t.Parallel()
+
+	if _, err := NewExecutor(nil, &fakeMutationClient{}, ""); !errors.Is(err, ErrDownloadSourceRequired) {
+		t.Errorf("nil source error = %v", err)
+	}
+	if _, err := NewExecutor(&fakeDownloadSource{}, nil, ""); !errors.Is(err, ErrMutationClientRequired) {
+		t.Errorf("nil client error = %v", err)
+	}
+}
+
+func TestPlannerExecutorLocalIntegration(t *testing.T) {
+	t.Parallel()
+
+	firstCandidate := candidate(1, 100, 1, 10)
+	secondCandidate := candidate(2, 60, 1, 1)
+	firstPlan, err := BuildPlan(150, []domain.Candidate{secondCandidate, firstCandidate}, nil)
+	if err != nil {
+		t.Fatalf("first BuildPlan() error = %v", err)
+	}
+	firstSource := &fakeDownloadSource{}
+	firstClient := &fakeMutationClient{}
+	firstExecutor, err := NewExecutor(firstSource, firstClient, "/downloads")
+	if err != nil {
+		t.Fatalf("first NewExecutor() error = %v", err)
+	}
+	if err := firstExecutor.Execute(context.Background(), firstPlan); err != nil {
+		t.Fatalf("first Execute() error = %v", err)
+	}
+	if len(firstClient.calls) != 1 || firstClient.calls[0].name != "add" || !strings.Contains(firstClient.calls[0].addRequest.SourceURL, "id=1") {
+		t.Fatalf("unexpected first execution: %#v", firstClient.calls)
+	}
+
+	simulatedManaged := []domain.ManagedTorrent{managedTorrent(1, 100, 1, ManagedTag)}
+	secondPlan, err := BuildPlan(150, []domain.Candidate{secondCandidate}, simulatedManaged)
+	if err != nil {
+		t.Fatalf("second BuildPlan() error = %v", err)
+	}
+	secondSource := &fakeDownloadSource{}
+	secondClient := &fakeMutationClient{}
+	secondExecutor, err := NewExecutor(secondSource, secondClient, "/downloads")
+	if err != nil {
+		t.Fatalf("second NewExecutor() error = %v", err)
+	}
+	if err := secondExecutor.Execute(context.Background(), secondPlan); err != nil {
+		t.Fatalf("second Execute() error = %v", err)
+	}
+	wantOperations := []string{"reannounce", "pause", "delete", "add"}
+	if len(secondClient.calls) != len(wantOperations) {
+		t.Fatalf("second execution calls = %#v", secondClient.calls)
+	}
+	for index, operation := range wantOperations {
+		if secondClient.calls[index].name != operation {
+			t.Errorf("second calls[%d] = %s, want %s", index, secondClient.calls[index].name, operation)
+		}
+	}
+}
+
+type fakeDownloadSource struct {
+	calls   []domain.TorrentID
+	urlByID map[domain.TorrentID]string
+	failID  domain.TorrentID
+	err     error
+}
+
+func (source *fakeDownloadSource) DownloadURL(_ context.Context, torrentID domain.TorrentID) (string, error) {
+	source.calls = append(source.calls, torrentID)
+	if torrentID == source.failID {
+		return "", source.err
+	}
+	if value, exists := source.urlByID[torrentID]; exists {
+		return value, nil
+	}
+	return fixtureDownloadURL(string(torrentID)), nil
+}
+
+type mutationCall struct {
+	name        string
+	hashes      []domain.TorrentHash
+	tags        []string
+	addRequest  port.AddTorrentRequest
+	deleteFiles bool
+}
+
+type fakeMutationClient struct {
+	calls         []mutationCall
+	failOperation string
+	err           error
+}
+
+func (client *fakeMutationClient) AddTags(_ context.Context, hashValues []domain.TorrentHash, tags []string) error {
+	return client.record(mutationCall{name: "addTags", hashes: cloneHashes(hashValues), tags: append([]string(nil), tags...)})
+}
+
+func (client *fakeMutationClient) RemoveTags(_ context.Context, hashValues []domain.TorrentHash, tags []string) error {
+	return client.record(mutationCall{name: "removeTags", hashes: cloneHashes(hashValues), tags: append([]string(nil), tags...)})
+}
+
+func (client *fakeMutationClient) Add(_ context.Context, request port.AddTorrentRequest) error {
+	request.Tags = append([]string(nil), request.Tags...)
+	return client.record(mutationCall{name: "add", addRequest: request})
+}
+
+func (client *fakeMutationClient) Reannounce(_ context.Context, hashValues []domain.TorrentHash) error {
+	return client.record(mutationCall{name: "reannounce", hashes: cloneHashes(hashValues)})
+}
+
+func (client *fakeMutationClient) Pause(_ context.Context, hashValues []domain.TorrentHash) error {
+	return client.record(mutationCall{name: "pause", hashes: cloneHashes(hashValues)})
+}
+
+func (client *fakeMutationClient) Delete(_ context.Context, hashValues []domain.TorrentHash, deleteFiles bool) error {
+	return client.record(mutationCall{name: "delete", hashes: cloneHashes(hashValues), deleteFiles: deleteFiles})
+}
+
+func (client *fakeMutationClient) record(call mutationCall) error {
+	client.calls = append(client.calls, call)
+	if call.name == client.failOperation {
+		return client.err
+	}
+	return nil
+}
+
+func fixtureDownloadURL(id string) string {
+	return fmt.Sprintf("https://byr.pt/download.php?id=%s&passkey=fixture", id)
+}
+
+func hashes(numbers ...int) []domain.TorrentHash {
+	values := make([]domain.TorrentHash, len(numbers))
+	for index, number := range numbers {
+		values[index] = torrentHash(number)
+	}
+	return values
+}
+
+func cloneHashes(values []domain.TorrentHash) []domain.TorrentHash {
+	return append([]domain.TorrentHash(nil), values...)
+}
