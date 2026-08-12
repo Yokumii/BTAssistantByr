@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Yokumii/BTAssistantByr/internal/domain"
+	"github.com/Yokumii/BTAssistantByr/internal/netretry"
 	"github.com/Yokumii/BTAssistantByr/internal/port"
 )
 
@@ -35,7 +37,7 @@ func TestClientListByTag(t *testing.T) {
 		}
 		assertAuthenticatedRequest(t, request)
 		response.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(response, `[{"hash":%q,"name":"Fixture","size":2048,"added_on":1720000000,"save_path":"/downloads","tags":"sc, toDel"}]`, fixtureHashOne)
+		fmt.Fprintf(response, `[{"hash":%q,"name":"Fixture","size":2048,"completed":1024,"amount_left":1024,"state":"downloading","added_on":1720000000,"save_path":"/downloads","tags":"sc, toDel"}]`, fixtureHashOne)
 	}))
 	defer server.Close()
 
@@ -48,7 +50,7 @@ func TestClientListByTag(t *testing.T) {
 		t.Fatalf("len(torrents) = %d, want 1", len(torrents))
 	}
 	torrent := torrents[0]
-	if torrent.Hash != fixtureHashOne || torrent.Name != "Fixture" || torrent.SizeBytes != 2048 || torrent.SavePath != "/downloads" {
+	if torrent.Hash != fixtureHashOne || torrent.Name != "Fixture" || torrent.SizeBytes != 2048 || torrent.CompletedBytes != 1024 || torrent.AmountLeftBytes != 1024 || torrent.State != "downloading" || torrent.SavePath != "/downloads" {
 		t.Errorf("unexpected torrent: %+v", torrent)
 	}
 	if !torrent.AddedAt.Equal(time.Unix(1720000000, 0)) {
@@ -83,6 +85,174 @@ func TestClientListAll(t *testing.T) {
 	}
 	if len(torrents) != 0 {
 		t.Fatalf("len(torrents) = %d, want 0", len(torrents))
+	}
+}
+
+func TestClientPreservesResponseBodyTimeout(t *testing.T) {
+	t.Parallel()
+
+	httpClient := &http.Client{Transport: qbitRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(qbitDeadlineReader{}),
+			Request:    request,
+		}, nil
+	})}
+	authenticator, err := NewAuthenticator("http://qbit.example", httpClient)
+	if err != nil {
+		t.Fatalf("NewAuthenticator() error = %v", err)
+	}
+	client, err := authenticator.NewClient(Credential{CookieName: legacySessionCookie, SID: "fixture"})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	_, err = client.ListAll(context.Background())
+	if !errors.Is(err, ErrInvalidResponse) || !errors.Is(err, context.DeadlineExceeded) || !netretry.IsTransient(err) {
+		t.Fatalf("qBittorrent response timeout was not preserved: %v", err)
+	}
+}
+
+type qbitRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (run qbitRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return run(request)
+}
+
+type qbitDeadlineReader struct{}
+
+func (qbitDeadlineReader) Read([]byte) (int, error) {
+	return 0, context.DeadlineExceeded
+}
+
+func TestClientFreeSpaceAtConfiguredPath(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		assertAuthenticatedRequest(t, request)
+		switch request.URL.Path {
+		case "/webui/api/v2/app/webapiVersion":
+			fmt.Fprint(response, "2.15.2")
+		case "/webui/api/v2/app/getFreeSpaceAtPathAction":
+			if request.URL.Query().Get("path") != "/downloads/topfree" {
+				http.Error(response, "unexpected path", http.StatusBadRequest)
+				return
+			}
+			fmt.Fprint(response, "107374182400")
+		default:
+			http.Error(response, "unexpected endpoint", http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	space, err := newTestClient(t, server).FreeSpace(context.Background(), " /downloads/topfree ")
+	if err != nil {
+		t.Fatalf("FreeSpace() error = %v", err)
+	}
+	if space.Path != "/downloads/topfree" || space.FreeBytes != 100*(1<<30) {
+		t.Errorf("FreeSpace() = %+v", space)
+	}
+}
+
+func TestClientFreeSpaceFallsBackForDefaultPath(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		assertAuthenticatedRequest(t, request)
+		switch request.URL.Path {
+		case "/webui/api/v2/app/webapiVersion":
+			fmt.Fprint(response, "2.11.4")
+		case "/webui/api/v2/app/defaultSavePath":
+			fmt.Fprint(response, "/downloads/")
+		case "/webui/api/v2/sync/maindata":
+			if request.URL.Query().Get("rid") != "0" {
+				http.Error(response, "unexpected rid", http.StatusBadRequest)
+				return
+			}
+			fmt.Fprint(response, `{"server_state":{"free_space_on_disk":53687091200}}`)
+		default:
+			http.Error(response, "unexpected endpoint", http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	space, err := newTestClient(t, server).FreeSpace(context.Background(), "/downloads")
+	if err != nil {
+		t.Fatalf("FreeSpace() error = %v", err)
+	}
+	if space.Path != "/downloads/" || space.FreeBytes != 50*(1<<30) {
+		t.Errorf("FreeSpace() = %+v", space)
+	}
+}
+
+func TestClientFreeSpaceRejectsCustomPathOnOldWebAPI(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/webui/api/v2/app/webapiVersion":
+			fmt.Fprint(response, "2.11.4")
+		case "/webui/api/v2/app/defaultSavePath":
+			fmt.Fprint(response, "/downloads")
+		default:
+			http.Error(response, "unexpected endpoint", http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	_, err := newTestClient(t, server).FreeSpace(context.Background(), "/other-disk")
+	if !errors.Is(err, ErrFreeSpaceUnsupported) {
+		t.Fatalf("FreeSpace() error = %v, want ErrFreeSpaceUnsupported", err)
+	}
+}
+
+func TestClientFreeSpaceRejectsDefaultPathChangeOnOldWebAPI(t *testing.T) {
+	t.Parallel()
+
+	var defaultPathCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/webui/api/v2/app/webapiVersion":
+			fmt.Fprint(response, "2.11.4")
+		case "/webui/api/v2/app/defaultSavePath":
+			if defaultPathCalls.Add(1) == 1 {
+				fmt.Fprint(response, "/downloads")
+			} else {
+				fmt.Fprint(response, "/other-disk")
+			}
+		case "/webui/api/v2/sync/maindata":
+			fmt.Fprint(response, `{"server_state":{"free_space_on_disk":53687091200}}`)
+		default:
+			http.Error(response, "unexpected endpoint", http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	_, err := newTestClient(t, server).FreeSpace(context.Background(), "")
+	if !errors.Is(err, ErrFreeSpaceUnsupported) {
+		t.Fatalf("FreeSpace() error = %v, want ErrFreeSpaceUnsupported", err)
+	}
+}
+
+func TestClientFreeSpaceRejectsInvalidResponse(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/webui/api/v2/app/webapiVersion":
+			fmt.Fprint(response, "2.15.2")
+		case "/webui/api/v2/app/getFreeSpaceAtPathAction":
+			fmt.Fprint(response, "-1")
+		default:
+			http.Error(response, "unexpected endpoint", http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	_, err := newTestClient(t, server).FreeSpace(context.Background(), "/missing")
+	if !errors.Is(err, ErrInvalidResponse) {
+		t.Fatalf("FreeSpace() error = %v, want ErrInvalidResponse", err)
 	}
 }
 
@@ -220,6 +390,20 @@ func TestClientReportsExpiredSession(t *testing.T) {
 	_, err := client.ListByTag(context.Background(), "sc")
 	if !errors.Is(err, ErrSessionExpired) {
 		t.Fatalf("error = %v, want ErrSessionExpired", err)
+	}
+}
+
+func TestClientMarksTemporaryServerFailureAsTransient(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	_, err := newTestClient(t, server).ListAll(context.Background())
+	if !errors.Is(err, ErrUnexpectedStatus) || !netretry.IsTransient(err) {
+		t.Fatalf("ListAll() error = %v, want transient ErrUnexpectedStatus", err)
 	}
 }
 

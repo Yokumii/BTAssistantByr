@@ -35,8 +35,11 @@ type Client struct {
 
 // Strategy contains TopFree strategy settings.
 type Strategy struct {
-	MaxDiskUsageBytes int64
-	RefreshInterval   time.Duration
+	MaxDiskUsageBytes   int64
+	MaxTorrentSizeBytes int64
+	MinFreeSpaceBytes   int64
+	RefreshInterval     time.Duration
+	QueueCheckInterval  time.Duration
 }
 
 // Execution contains the write-safety policy.
@@ -46,6 +49,9 @@ type Execution struct {
 
 // Runtime contains paths used for generated application data.
 type Runtime struct {
-	DataDir string
-	LogDir  string
+	DataDir           string
+	LogDir            string
+	LogLevel          string
+	LogColor          string
+	NetworkRetryCount int
 }

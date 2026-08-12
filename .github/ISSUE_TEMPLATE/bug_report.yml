@@ -1,0 +1,110 @@
+name: Bug 报告
+description: 报告可稳定复现的异常行为或功能故障
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。提交前请先搜索已有 Issue，并确认问题在最新版本中仍然存在。
+
+        请勿提交 BYR/qBittorrent 的用户名、密码、Cookie、SID、passkey、私有下载链接或其他敏感信息。
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: 提交前检查
+      options:
+        - label: 我已搜索已有 Issue，未发现相同问题。
+          required: true
+        - label: 我已确认问题在最新版本或最新代码中仍然存在。
+          required: true
+        - label: 我已从配置、日志和截图中移除所有敏感信息。
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: 请填写 Release 版本，或源码构建所使用的 Git commit。
+      placeholder: 例如 v1.2.3 或 66fad29
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: 运行环境
+      options:
+        - Linux amd64
+        - Linux arm64
+        - macOS amd64
+        - macOS arm64
+        - Windows amd64
+        - Windows arm64
+        - 其他
+    validations:
+      required: true
+
+  - type: input
+    id: qbittorrent_version
+    attributes:
+      label: qBittorrent 版本
+      placeholder: 例如 5.1.0
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 请简洁说明发生了什么，以及问题造成的影响。
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 复现步骤
+      description: 请提供能够稳定触发问题的最小步骤。
+      placeholder: |
+        1. 使用以下配置启动程序……
+        2. 等待 TopFree 刷新……
+        3. 观察到……
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+      description: 你认为程序应该如何表现？
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      description: 实际发生了什么？如有报错，请提供完整错误信息。
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志
+      description: 建议使用 debug 日志；提交前务必移除凭证、Cookie、SID、passkey 和私有 URL。
+      render: shell
+
+  - type: textarea
+    id: config
+    attributes:
+      label: 相关配置
+      description: 仅粘贴与问题有关且已经脱敏的配置；不需要时可留空。
+      render: yaml
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: 补充信息
+      description: 可提供截图、网络环境或其他有助于定位问题的信息。

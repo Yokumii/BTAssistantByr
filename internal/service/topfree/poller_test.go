@@ -3,10 +3,12 @@ package topfree
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/Yokumii/BTAssistantByr/internal/domain"
+	"github.com/Yokumii/BTAssistantByr/internal/netretry"
 )
 
 type sourceFunc func(context.Context) ([]domain.Candidate, error)
@@ -22,7 +24,7 @@ func TestPollerRunsImmediatelyAndRepeats(t *testing.T) {
 	poller, err := NewPoller(sourceFunc(func(context.Context) ([]domain.Candidate, error) {
 		fetches++
 		return []domain.Candidate{{ID: "fixture"}}, nil
-	}), time.Millisecond)
+	}), time.Millisecond, time.Hour)
 	if err != nil {
 		t.Fatalf("NewPoller() error = %v", err)
 	}
@@ -51,7 +53,7 @@ func TestPollerReturnsSourceError(t *testing.T) {
 	wantErr := errors.New("source failed")
 	poller, err := NewPoller(sourceFunc(func(context.Context) ([]domain.Candidate, error) {
 		return nil, wantErr
-	}), time.Second)
+	}), time.Second, time.Second)
 	if err != nil {
 		t.Fatalf("NewPoller() error = %v", err)
 	}
@@ -66,7 +68,7 @@ func TestPollerReturnsHandlerError(t *testing.T) {
 	wantErr := errors.New("handler failed")
 	poller, err := NewPoller(sourceFunc(func(context.Context) ([]domain.Candidate, error) {
 		return nil, nil
-	}), time.Second)
+	}), time.Second, time.Second)
 	if err != nil {
 		t.Fatalf("NewPoller() error = %v", err)
 	}
@@ -82,7 +84,7 @@ func TestPollerDoesNotFetchAfterCancellation(t *testing.T) {
 	poller, err := NewPoller(sourceFunc(func(context.Context) ([]domain.Candidate, error) {
 		fetched = true
 		return nil, nil
-	}), time.Second)
+	}), time.Second, time.Second)
 	if err != nil {
 		t.Fatalf("NewPoller() error = %v", err)
 	}
@@ -99,10 +101,128 @@ func TestPollerDoesNotFetchAfterCancellation(t *testing.T) {
 func TestNewPollerValidatesDependencies(t *testing.T) {
 	t.Parallel()
 
-	if _, err := NewPoller(nil, time.Second); !errors.Is(err, ErrSourceRequired) {
+	if _, err := NewPoller(nil, time.Second, time.Second); !errors.Is(err, ErrSourceRequired) {
 		t.Errorf("nil source error = %v", err)
 	}
-	if _, err := NewPoller(sourceFunc(func(context.Context) ([]domain.Candidate, error) { return nil, nil }), 0); !errors.Is(err, ErrInvalidInterval) {
+	if _, err := NewPoller(sourceFunc(func(context.Context) ([]domain.Candidate, error) { return nil, nil }), 0, time.Second); !errors.Is(err, ErrInvalidInterval) {
 		t.Errorf("zero interval error = %v", err)
+	}
+	if _, err := NewPoller(sourceFunc(func(context.Context) ([]domain.Candidate, error) { return nil, nil }), time.Second, 0); !errors.Is(err, ErrInvalidQueueCheckInterval) {
+		t.Errorf("zero queue interval error = %v", err)
+	}
+}
+
+func TestPollerChecksQueueWithoutRefreshingTracker(t *testing.T) {
+	t.Parallel()
+
+	var fetches int
+	var handles int
+	poller, err := NewPoller(sourceFunc(func(context.Context) ([]domain.Candidate, error) {
+		fetches++
+		return []domain.Candidate{{ID: "fixture"}}, nil
+	}), time.Hour, time.Millisecond)
+	if err != nil {
+		t.Fatalf("NewPoller() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	err = poller.Run(ctx, func(context.Context, []domain.Candidate) error {
+		handles++
+		if handles == 2 {
+			cancel()
+		}
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want context.Canceled", err)
+	}
+	if fetches != 1 || handles != 2 {
+		t.Fatalf("fetches = %d, handles = %d, want 1 and 2", fetches, handles)
+	}
+}
+
+func TestPollerSkipsFailedNetworkRefreshUntilNextRefresh(t *testing.T) {
+	t.Parallel()
+
+	var fetches int
+	var handles int
+	poller, err := NewPoller(sourceFunc(func(context.Context) ([]domain.Candidate, error) {
+		fetches++
+		if fetches == 1 {
+			return nil, netretry.Transient(errors.New("tracker unavailable"))
+		}
+		return []domain.Candidate{{ID: "fixture"}}, nil
+	}), time.Millisecond, time.Hour)
+	if err != nil {
+		t.Fatalf("NewPoller() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	err = poller.Run(ctx, func(context.Context, []domain.Candidate) error {
+		handles++
+		cancel()
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want context.Canceled", err)
+	}
+	if fetches != 2 || handles != 1 {
+		t.Fatalf("fetches = %d, handles = %d, want 2 and 1", fetches, handles)
+	}
+}
+
+func TestPollerSkipsTransientHandlerFailureAndChecksQueueAgain(t *testing.T) {
+	t.Parallel()
+
+	var fetches int
+	var handles int
+	poller, err := NewPoller(sourceFunc(func(context.Context) ([]domain.Candidate, error) {
+		fetches++
+		return []domain.Candidate{{ID: "fixture"}}, nil
+	}), time.Hour, time.Millisecond)
+	if err != nil {
+		t.Fatalf("NewPoller() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	err = poller.Run(ctx, func(context.Context, []domain.Candidate) error {
+		handles++
+		if handles == 1 {
+			return netretry.Transient(errors.New("qBittorrent unavailable"))
+		}
+		cancel()
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want context.Canceled", err)
+	}
+	if fetches != 1 || handles != 2 {
+		t.Fatalf("fetches = %d, handles = %d, want 1 and 2", fetches, handles)
+	}
+}
+
+func TestPollerDefersDiskShortageAndChecksQueueAgain(t *testing.T) {
+	t.Parallel()
+
+	var fetches int
+	var handles int
+	poller, err := NewPoller(sourceFunc(func(context.Context) ([]domain.Candidate, error) {
+		fetches++
+		return []domain.Candidate{{ID: "fixture"}}, nil
+	}), time.Hour, time.Millisecond)
+	if err != nil {
+		t.Fatalf("NewPoller() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	err = poller.Run(ctx, func(context.Context, []domain.Candidate) error {
+		handles++
+		if handles == 1 {
+			return fmt.Errorf("verify cleanup: %w", ErrInsufficientDiskSpace)
+		}
+		cancel()
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want context.Canceled", err)
+	}
+	if fetches != 1 || handles != 2 {
+		t.Fatalf("fetches = %d, handles = %d, want 1 and 2", fetches, handles)
 	}
 }

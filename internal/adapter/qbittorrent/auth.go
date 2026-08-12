@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Yokumii/BTAssistantByr/internal/netretry"
 )
 
 const (
@@ -106,7 +108,11 @@ func (a *Authenticator) Login(ctx context.Context, username, password string) (C
 	defer response.Body.Close()
 
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return Credential{}, fmt.Errorf("%w: %s", ErrUnexpectedStatus, response.Status)
+		statusErr := fmt.Errorf("%w: %s", ErrUnexpectedStatus, response.Status)
+		if netretry.TransientStatus(response.StatusCode) {
+			statusErr = netretry.Transient(statusErr)
+		}
+		return Credential{}, statusErr
 	}
 
 	for _, cookie := range response.Cookies() {

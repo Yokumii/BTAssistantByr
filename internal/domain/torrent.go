@@ -22,10 +22,19 @@ type Candidate struct {
 
 // ManagedTorrent is a torrent already known by the local torrent client.
 type ManagedTorrent struct {
-	Hash      TorrentHash
-	Name      string
-	SizeBytes int64
-	AddedAt   time.Time
-	SavePath  string
-	Tags      []string
+	Hash            TorrentHash
+	Name            string
+	SizeBytes       int64
+	CompletedBytes  int64
+	AmountLeftBytes int64
+	State           string
+	AddedAt         time.Time
+	SavePath        string
+	Tags            []string
+}
+
+// DiskSpace reports free bytes for the effective qBittorrent download path.
+type DiskSpace struct {
+	Path      string
+	FreeBytes int64
 }

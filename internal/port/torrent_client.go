@@ -15,6 +15,7 @@ type AddTorrentRequest struct {
 
 // TorrentClient exposes the client operations required by strategies.
 type TorrentClient interface {
+	FreeSpace(context.Context, string) (domain.DiskSpace, error)
 	ListAll(context.Context) ([]domain.ManagedTorrent, error)
 	ListByTag(context.Context, string) ([]domain.ManagedTorrent, error)
 	AddTags(context.Context, []domain.TorrentHash, []string) error
