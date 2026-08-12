@@ -274,6 +274,53 @@ func TestClientReturnsSessionRefreshFailure(t *testing.T) {
 	}
 }
 
+func TestClientAllowsCacheThenConfiguredCookieFallbacksBeforeLogin(t *testing.T) {
+	t.Parallel()
+
+	var refreshes atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		cookie, err := request.Cookie(authTokenCookie)
+		if err != nil {
+			http.Error(response, "missing auth cookie", http.StatusUnauthorized)
+			return
+		}
+		if cookie.Value != "login-token" {
+			response.Header().Set("Location", "/login.php")
+			response.WriteHeader(http.StatusFound)
+			return
+		}
+		fmt.Fprint(response, "<p>Hash码 0123456789abcdef0123456789abcdef01234567</p>")
+	}))
+	defer server.Close()
+
+	authenticator, err := NewAuthenticator(server.URL, server.Client())
+	if err != nil {
+		t.Fatalf("NewAuthenticator() error = %v", err)
+	}
+	client, err := authenticator.NewRefreshingClientWithInitialFallbacks(Credential{AuthToken: "cached-token", SessionID: "cached-session"}, func(context.Context) (Credential, error) {
+		switch refreshes.Add(1) {
+		case 1:
+			return Credential{AuthToken: "configured-token"}, nil
+		case 2:
+			return Credential{AuthToken: "login-token", SessionID: "login-session"}, nil
+		default:
+			return Credential{}, errors.New("unexpected extra refresh")
+		}
+	}, 2)
+	if err != nil {
+		t.Fatalf("NewRefreshingClientWithInitialFallbacks() error = %v", err)
+	}
+	if _, err := client.TorrentHash(context.Background(), "1"); err != nil {
+		t.Fatalf("TorrentHash() error = %v", err)
+	}
+	if got := refreshes.Load(); got != 2 {
+		t.Fatalf("credential refreshes = %d, want 2", got)
+	}
+	if got := client.sessionRefreshLimit(); got != 1 {
+		t.Fatalf("session refresh limit after initial fallback = %d, want 1", got)
+	}
+}
+
 func TestNewClientRequiresAuthToken(t *testing.T) {
 	t.Parallel()
 
@@ -284,6 +331,25 @@ func TestNewClientRequiresAuthToken(t *testing.T) {
 	_, err = authenticator.NewClient(Credential{})
 	if !errors.Is(err, ErrAuthenticationFailed) {
 		t.Fatalf("error = %v, want ErrAuthenticationFailed", err)
+	}
+}
+
+func TestNewRefreshingClientWithInitialFallbacksRejectsInvalidLimit(t *testing.T) {
+	t.Parallel()
+
+	authenticator, err := NewAuthenticator("https://byr.pt", nil)
+	if err != nil {
+		t.Fatalf("NewAuthenticator() error = %v", err)
+	}
+	for _, limit := range []int{0, 3} {
+		_, err = authenticator.NewRefreshingClientWithInitialFallbacks(
+			Credential{AuthToken: "auth-token"},
+			func(context.Context) (Credential, error) { return Credential{AuthToken: "renewed-token"}, nil },
+			limit,
+		)
+		if !errors.Is(err, ErrInvalidSessionRefreshLimit) {
+			t.Fatalf("limit %d error = %v, want ErrInvalidSessionRefreshLimit", limit, err)
+		}
 	}
 }
 

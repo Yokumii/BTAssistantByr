@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Yokumii/BTAssistantByr/internal/adapter/byr"
 	"github.com/Yokumii/BTAssistantByr/internal/config"
 	"github.com/Yokumii/BTAssistantByr/internal/domain"
 	"github.com/Yokumii/BTAssistantByr/internal/service/topfree"
@@ -107,6 +108,66 @@ func TestAssembleLogsIntoBYRWhenCookieIsEmpty(t *testing.T) {
 	}
 }
 
+func TestAssembleReusesCachedBYRSessionBeforeLoggingInAgain(t *testing.T) {
+	t.Parallel()
+
+	fixture := newLifecycleFixture(t)
+	defer fixture.Close()
+	configuration := fixture.configuration(domain.ExecutionModeYOLO, false)
+
+	for assembly := 1; assembly <= 2; assembly++ {
+		application, err := Assemble(context.Background(), configuration, nil, nil)
+		if err != nil {
+			t.Fatalf("Assemble() call %d error = %v", assembly, err)
+		}
+		if application == nil {
+			t.Fatalf("Assemble() call %d returned nil", assembly)
+		}
+	}
+	if got := fixture.byrLogins.Load(); got != 1 {
+		t.Fatalf("BYR login requests = %d, want 1 across two starts", got)
+	}
+}
+
+func TestLoadBYRCredentialPrefersCacheOverConfiguredCookie(t *testing.T) {
+	t.Parallel()
+
+	cache, err := byr.NewSessionCache(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewSessionCache() error = %v", err)
+	}
+	configuration := config.Tracker{BaseURL: "https://byr.pt", Username: "alice", Cookie: "configured-cookie"}
+	if err := cache.Save(configuration.BaseURL, configuration.Username, byr.Credential{AuthToken: "cached-token", SessionID: "cached-session"}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	credential, source, err := loadBYRCredential(cache, configuration)
+	if err != nil {
+		t.Fatalf("loadBYRCredential() error = %v", err)
+	}
+	if source != byrCredentialSourceCache || credential.AuthToken != "cached-token" || credential.SessionID != "cached-session" {
+		t.Fatalf("credential=%+v source=%q", credential, source)
+	}
+}
+
+func TestLoadBYRCredentialFallsBackInPriorityOrder(t *testing.T) {
+	t.Parallel()
+
+	cache, err := byr.NewSessionCache(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewSessionCache() error = %v", err)
+	}
+	configuration := config.Tracker{BaseURL: "https://byr.pt", Username: "alice", Cookie: "configured-cookie"}
+	credential, source, err := loadBYRCredential(cache, configuration)
+	if err != nil || source != byrCredentialSourceConfig || credential.AuthToken != "configured-cookie" {
+		t.Fatalf("configured cookie fallback credential=%+v source=%q error=%v", credential, source, err)
+	}
+	configuration.Cookie = ""
+	credential, source, err = loadBYRCredential(cache, configuration)
+	if err != nil || source != byrCredentialSourceLogin || credential != (byr.Credential{}) {
+		t.Fatalf("login fallback credential=%+v source=%q error=%v", credential, source, err)
+	}
+}
+
 func TestApplicationRenewsExpiredConfiguredBYRCookie(t *testing.T) {
 	t.Parallel()
 
@@ -141,6 +202,17 @@ func TestApplicationRenewsExpiredConfiguredBYRCookie(t *testing.T) {
 	if got := fixture.mutations.Load(); got != 1 {
 		t.Fatalf("qBittorrent mutations = %d, want 1", got)
 	}
+	cache, err := byr.NewSessionCache(configuration.Runtime.DataDir)
+	if err != nil {
+		t.Fatalf("NewSessionCache() error = %v", err)
+	}
+	credential, found, err := cache.Load(configuration.Tracker.BaseURL, configuration.Tracker.Username)
+	if err != nil {
+		t.Fatalf("Load() renewed cache error = %v", err)
+	}
+	if !found || credential.AuthToken != "tracker-session-renewed" || credential.SessionID != "tracker-session-id-renewed" {
+		t.Fatalf("renewed cache credential=%+v found=%t", credential, found)
+	}
 	for _, expected := range []string{"BYR session expired; reauthenticating", "network request failed; retrying", "BYR session renewed"} {
 		if !strings.Contains(logs.String(), expected) {
 			t.Errorf("logs do not contain %q:\n%s", expected, logs.String())
@@ -150,6 +222,44 @@ func TestApplicationRenewsExpiredConfiguredBYRCookie(t *testing.T) {
 		if strings.Contains(logs.String(), secret) {
 			t.Errorf("session renewal logs contain secret %q", secret)
 		}
+	}
+}
+
+func TestApplicationFallsBackFromExpiredCacheAndConfiguredCookie(t *testing.T) {
+	t.Parallel()
+
+	fixture := newLifecycleFixture(t)
+	defer fixture.Close()
+	fixture.expireInitialBYRSession = true
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fixture.onMutation = cancel
+	configuration := fixture.configuration(domain.ExecutionModeYOLO, true)
+	cache, err := byr.NewSessionCache(configuration.Runtime.DataDir)
+	if err != nil {
+		t.Fatalf("NewSessionCache() error = %v", err)
+	}
+	if err := cache.Save(
+		configuration.Tracker.BaseURL,
+		configuration.Tracker.Username,
+		byr.Credential{AuthToken: "expired-cached-token", SessionID: "expired-cached-session"},
+	); err != nil {
+		t.Fatalf("Save() expired cache error = %v", err)
+	}
+
+	application, err := Assemble(ctx, configuration, nil, nil)
+	if err != nil {
+		t.Fatalf("Assemble() error = %v", err)
+	}
+	if err := application.Run(ctx); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if got := fixture.byrLogins.Load(); got != 1 {
+		t.Fatalf("BYR login requests = %d, want 1 after cache and configured cookie expired", got)
+	}
+	credential, found, err := cache.Load(configuration.Tracker.BaseURL, configuration.Tracker.Username)
+	if err != nil || !found || credential.AuthToken != "tracker-session-renewed" {
+		t.Fatalf("renewed cache credential=%+v found=%t error=%v", credential, found, err)
 	}
 }
 
@@ -171,11 +281,12 @@ type lifecycleFixture struct {
 	onMutation              func()
 	expireInitialBYRSession bool
 	renewalFailures         int32
+	dataDir                 string
 }
 
 func newLifecycleFixture(t *testing.T) *lifecycleFixture {
 	t.Helper()
-	fixture := &lifecycleFixture{}
+	fixture := &lifecycleFixture{dataDir: t.TempDir()}
 	fixture.Server = httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		fixture.serveHTTP(t, response, request)
 	}))
@@ -207,7 +318,10 @@ func (fixture *lifecycleFixture) configuration(mode domain.ExecutionMode, withBY
 			QueueCheckInterval: time.Hour,
 		},
 		Execution: config.Execution{Mode: mode},
-		Runtime:   config.Runtime{NetworkRetryCount: 0},
+		Runtime: config.Runtime{
+			DataDir:           fixture.dataDir,
+			NetworkRetryCount: 0,
+		},
 	}
 }
 
@@ -245,7 +359,7 @@ func (fixture *lifecycleFixture) serveHTTP(t *testing.T, response http.ResponseW
 	case "/tracker/torrents.php":
 		if fixture.expireInitialBYRSession {
 			cookie, cookieErr := request.Cookie("auth_token")
-			if cookieErr == nil && cookie.Value == "tracker-session" {
+			if cookieErr != nil || cookie.Value != "tracker-session-renewed" {
 				response.Header().Set("Location", "/tracker/login.php")
 				response.WriteHeader(http.StatusFound)
 				return

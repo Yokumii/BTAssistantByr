@@ -29,6 +29,8 @@ var (
 	ErrPasskeyNotFound = errors.New("BYR passkey not found")
 	// ErrInvalidTorrentID indicates that a torrent ID cannot be used in a BYR URL.
 	ErrInvalidTorrentID = errors.New("invalid BYR torrent ID")
+	// ErrInvalidSessionRefreshLimit indicates that a refreshing client cannot be configured safely.
+	ErrInvalidSessionRefreshLimit = errors.New("invalid BYR session refresh limit")
 )
 
 var _ port.Tracker = (*Client)(nil)
@@ -46,6 +48,7 @@ type Client struct {
 	credentialGeneration uint64
 	refreshMu            sync.Mutex
 	refreshCredential    CredentialRefresh
+	maxSessionRefreshes  int
 
 	hashMu    sync.RWMutex
 	hashCache map[domain.TorrentID]domain.TorrentHash
@@ -101,22 +104,36 @@ func (c *Client) Passkey(ctx context.Context) (string, error) {
 
 // NewClient creates an authenticated client that shares this authenticator's HTTP settings.
 func (a *Authenticator) NewClient(credential Credential) (*Client, error) {
-	return a.NewRefreshingClient(credential, nil)
+	return a.newRefreshingClient(credential, nil, 0)
 }
 
 // NewRefreshingClient creates a client that can replace expired session cookies.
 func (a *Authenticator) NewRefreshingClient(credential Credential, refresh CredentialRefresh) (*Client, error) {
+	return a.newRefreshingClient(credential, refresh, 1)
+}
+
+// NewRefreshingClientWithInitialFallbacks creates a client that may walk a
+// longer credential fallback chain once, then returns to one renewal per read.
+func (a *Authenticator) NewRefreshingClientWithInitialFallbacks(credential Credential, refresh CredentialRefresh, maxRefreshes int) (*Client, error) {
+	if refresh == nil || maxRefreshes <= 0 || maxRefreshes > 2 {
+		return nil, ErrInvalidSessionRefreshLimit
+	}
+	return a.newRefreshingClient(credential, refresh, maxRefreshes)
+}
+
+func (a *Authenticator) newRefreshingClient(credential Credential, refresh CredentialRefresh, maxRefreshes int) (*Client, error) {
 	credential, err := normalizeCredential(credential)
 	if err != nil {
 		return nil, err
 	}
 
 	return &Client{
-		baseURL:           a.baseURL,
-		httpClient:        a.httpClient,
-		credential:        credential,
-		refreshCredential: refresh,
-		hashCache:         make(map[domain.TorrentID]domain.TorrentHash),
+		baseURL:             a.baseURL,
+		httpClient:          a.httpClient,
+		credential:          credential,
+		refreshCredential:   refresh,
+		maxSessionRefreshes: maxRefreshes,
+		hashCache:           make(map[domain.TorrentID]domain.TorrentHash),
 	}, nil
 }
 
@@ -183,20 +200,23 @@ func (c *Client) TorrentHash(ctx context.Context, torrentID domain.TorrentID) (d
 }
 
 func (c *Client) get(ctx context.Context, relativePath string, query url.Values) (*http.Response, error) {
-	for attempt := 0; attempt < 2; attempt++ {
+	maxRefreshes := c.sessionRefreshLimit()
+	for refreshes := 0; ; refreshes++ {
 		credential, generation := c.currentCredential()
 		response, err := c.getWithCredential(ctx, relativePath, query, credential)
 		if !errors.Is(err, ErrSessionExpired) {
 			return response, err
 		}
-		if attempt > 0 || c.refreshCredential == nil {
+		if refreshes >= maxRefreshes || c.refreshCredential == nil {
 			return nil, err
 		}
 		if err := c.refreshSession(ctx, generation); err != nil {
 			return nil, fmt.Errorf("refresh BYR session: %w", err)
 		}
+		if maxRefreshes > 1 {
+			c.consumeInitialFallbacks()
+		}
 	}
-	return nil, ErrSessionExpired
 }
 
 func (c *Client) getWithCredential(ctx context.Context, relativePath string, query url.Values, credential Credential) (*http.Response, error) {
@@ -240,6 +260,20 @@ func (c *Client) currentCredential() (Credential, uint64) {
 	c.credentialMu.RLock()
 	defer c.credentialMu.RUnlock()
 	return c.credential, c.credentialGeneration
+}
+
+func (c *Client) sessionRefreshLimit() int {
+	c.credentialMu.RLock()
+	defer c.credentialMu.RUnlock()
+	return c.maxSessionRefreshes
+}
+
+func (c *Client) consumeInitialFallbacks() {
+	c.credentialMu.Lock()
+	defer c.credentialMu.Unlock()
+	if c.maxSessionRefreshes > 1 {
+		c.maxSessionRefreshes = 1
+	}
 }
 
 func (c *Client) refreshSession(ctx context.Context, expiredGeneration uint64) error {

@@ -76,30 +76,47 @@ func AssembleWithLogger(
 		return nil, fmt.Errorf("create BYR authenticator: %w", err)
 	}
 	logger.DebugContext(ctx, "BYR authenticator created", "proxy_enabled", configuration.Tracker.ProxyURL != "")
-	byrStarted := time.Now()
-	logger.DebugContext(ctx, "establishing BYR session", "reuse_auth_token", configuration.Tracker.Cookie != "")
-	byrCredential, err := netretry.DoValue(ctx, retryPolicy, "authenticate BYR", func() (byr.Credential, error) {
-		return authenticateBYR(ctx, byrAuthenticator, configuration.Tracker)
-	})
+	byrSessionCache, err := byr.NewSessionCache(configuration.Runtime.DataDir)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create BYR session cache: %w", err)
 	}
-	logger.InfoContext(ctx, "BYR session ready", "reused_auth_token", configuration.Tracker.Cookie != "", "duration", time.Since(byrStarted))
-	byrSessionLogger := rootLogger.With("component", "byr_session")
-	byrClient, err := byrAuthenticator.NewRefreshingClient(byrCredential, func(refreshContext context.Context) (byr.Credential, error) {
-		started := time.Now()
-		byrSessionLogger.WarnContext(refreshContext, "BYR session expired; reauthenticating")
-		credential, refreshErr := byrAuthenticator.Login(
-			refreshContext,
-			configuration.Tracker.Username,
-			configuration.Tracker.Password,
-		)
-		if refreshErr != nil {
-			return byr.Credential{}, fmt.Errorf("reauthenticate BYR: %w", refreshErr)
+	byrCredential, byrCredentialSource, err := loadBYRCredential(byrSessionCache, configuration.Tracker)
+	if err != nil {
+		return nil, fmt.Errorf("load BYR session: %w", err)
+	}
+	byrStarted := time.Now()
+	logger.DebugContext(ctx, "establishing BYR session", "credential_source", byrCredentialSource, "session_cache_path", byrSessionCache.Path())
+	if byrCredentialSource == byrCredentialSourceLogin {
+		byrCredential, err = netretry.DoValue(ctx, retryPolicy, "authenticate BYR", func() (byr.Credential, error) {
+			credential, loginErr := byrAuthenticator.Login(ctx, configuration.Tracker.Username, configuration.Tracker.Password)
+			if loginErr != nil {
+				return byr.Credential{}, fmt.Errorf("authenticate BYR: %w", loginErr)
+			}
+			return credential, nil
+		})
+		if err != nil {
+			return nil, err
 		}
-		byrSessionLogger.InfoContext(refreshContext, "BYR session renewed", "duration", time.Since(started))
-		return credential, nil
-	})
+		if err := byrSessionCache.Save(configuration.Tracker.BaseURL, configuration.Tracker.Username, byrCredential); err != nil {
+			return nil, fmt.Errorf("cache BYR session after login: %w", err)
+		}
+	}
+	logger.InfoContext(ctx, "BYR session ready", "credential_source", byrCredentialSource, "duration", time.Since(byrStarted))
+	byrSessionLogger := rootLogger.With("component", "byr_session")
+	byrCredentialRefresher := &byrCredentialRefresher{
+		authenticator: byrAuthenticator,
+		cache:         byrSessionCache,
+		configuration: configuration.Tracker,
+		source:        byrCredentialSource,
+		logger:        byrSessionLogger,
+	}
+	maxSessionRefreshes := 1
+	if byrCredentialSource == byrCredentialSourceCache && configuration.Tracker.Cookie != "" {
+		maxSessionRefreshes = 2
+	}
+	byrClient, err := byrAuthenticator.NewRefreshingClientWithInitialFallbacks(byrCredential, func(refreshContext context.Context) (byr.Credential, error) {
+		return byrCredentialRefresher.Refresh(refreshContext)
+	}, maxSessionRefreshes)
 	if err != nil {
 		return nil, fmt.Errorf("create BYR client: %w", err)
 	}
@@ -203,22 +220,65 @@ func executionApprover(
 	}
 }
 
-func authenticateBYR(
-	ctx context.Context,
-	authenticator *byr.Authenticator,
-	configuration config.Tracker,
-) (byr.Credential, error) {
-	if configuration.Cookie != "" {
-		credential, err := byr.NewCredential(configuration.Cookie)
+type byrCredentialSource string
+
+const (
+	byrCredentialSourceCache  byrCredentialSource = "cache"
+	byrCredentialSourceConfig byrCredentialSource = "config_cookie"
+	byrCredentialSourceLogin  byrCredentialSource = "login"
+)
+
+type byrCredentialRefresher struct {
+	authenticator *byr.Authenticator
+	cache         *byr.SessionCache
+	configuration config.Tracker
+	source        byrCredentialSource
+	logger        *slog.Logger
+}
+
+func (refresher *byrCredentialRefresher) Refresh(ctx context.Context) (byr.Credential, error) {
+	if refresher.source == byrCredentialSourceCache && refresher.configuration.Cookie != "" {
+		refresher.logger.WarnContext(ctx, "cached BYR session expired; trying configured auth token")
+		credential, err := byr.NewCredential(refresher.configuration.Cookie)
 		if err != nil {
 			return byr.Credential{}, fmt.Errorf("use configured BYR auth token: %w", err)
 		}
+		refresher.source = byrCredentialSourceConfig
 		return credential, nil
 	}
 
-	credential, err := authenticator.Login(ctx, configuration.Username, configuration.Password)
+	started := time.Now()
+	refresher.logger.WarnContext(ctx, "BYR session expired; reauthenticating")
+	credential, err := refresher.authenticator.Login(
+		ctx,
+		refresher.configuration.Username,
+		refresher.configuration.Password,
+	)
 	if err != nil {
-		return byr.Credential{}, fmt.Errorf("authenticate BYR: %w", err)
+		return byr.Credential{}, fmt.Errorf("reauthenticate BYR: %w", err)
 	}
+	if err := refresher.cache.Save(refresher.configuration.BaseURL, refresher.configuration.Username, credential); err != nil {
+		return byr.Credential{}, fmt.Errorf("cache renewed BYR session: %w", err)
+	}
+	refresher.source = byrCredentialSourceLogin
+	refresher.logger.InfoContext(ctx, "BYR session renewed", "duration", time.Since(started))
 	return credential, nil
+}
+
+func loadBYRCredential(cache *byr.SessionCache, configuration config.Tracker) (byr.Credential, byrCredentialSource, error) {
+	credential, found, err := cache.Load(configuration.BaseURL, configuration.Username)
+	if err != nil {
+		return byr.Credential{}, "", err
+	}
+	if found {
+		return credential, byrCredentialSourceCache, nil
+	}
+	if configuration.Cookie != "" {
+		credential, err = byr.NewCredential(configuration.Cookie)
+		if err != nil {
+			return byr.Credential{}, "", fmt.Errorf("use configured BYR auth token: %w", err)
+		}
+		return credential, byrCredentialSourceConfig, nil
+	}
+	return byr.Credential{}, byrCredentialSourceLogin, nil
 }

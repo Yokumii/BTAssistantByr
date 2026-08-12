@@ -125,9 +125,11 @@ runtime:
 | `tracker.proxy_url` | 可留空；支持 `http`、`https`、`socks5` 和 `socks5h`。代理只作用于 BYR，不代理本机 qBittorrent。 |
 | `tracker.username` | BYR 用户名，必填。 |
 | `tracker.password` | BYR 密码，必填。 |
-| `tracker.cookie` | 可选的已有 `auth_token`。仅用于启动时复用；过期后程序会用用户名和密码重新登录。 |
+| `tracker.cookie` | 可选的已有 `auth_token`。仅在没有可用本地会话缓存时使用；过期后程序会用用户名和密码重新登录。 |
 
-使用用户名和密码登录时，程序会请求 BYR 的长期会话，以减少常驻运行期间的重复登录。认证信息只保存在内存中，不会写回配置文件；长期会话仍可能被用户或服务端撤销，失效时程序会自动重新登录，获取新的 `auth_token` 和 `session_id`，然后重试刚才失败的读取请求。
+BYR 凭据按“`runtime.data_dir/byr_session.json` 会话缓存 → `tracker.cookie` → 用户名密码登录”的优先级获取。使用用户名和密码登录或重新登录成功后，程序会以受限权限更新会话缓存，后续重启直接复用同一个长期会话，避免账户下不断新增会话记录。缓存绑定 `tracker.base_url` 和 `tracker.username`，切换站点或账号时不会误用；它只保存页面请求需要的 `auth_token` 和 `session_id`，不会保存密码、passkey 或 API Access Token，也不会修改配置文件。该文件属于敏感凭据，请限制 `runtime.data_dir` 的访问权限，不要复制到日志、Issue 或公开备份中。
+
+缓存或配置 Cookie 仍可能被用户或服务端撤销。请求被 BYR 判定为会话过期时，程序会继续按上述优先级尝试下一级凭据；最终使用用户名密码建立新的长期会话、覆盖缓存，然后重试刚才失败的读取请求。缓存文件损坏或无法安全读写时会显式报错，不会静默创建新会话。
 
 ### qBittorrent
 
@@ -177,7 +179,7 @@ BYR 刷新成功后会立即检查一次队列。刷新重试仍失败时，旧�
 
 | 配置项 | 说明 |
 | --- | --- |
-| `runtime.data_dir` | 运行数据目录。 |
+| `runtime.data_dir` | 运行数据目录；包含敏感的 BYR 会话缓存 `byr_session.json`，不要共享或公开。 |
 | `runtime.log_dir` | 文件日志目录，日志文件为 `btassistantbyr.log`。 |
 | `runtime.log_level` | `debug`、`info`、`warn` 或 `error`。排查问题时使用 `debug`。 |
 | `runtime.log_color` | `auto`、`always` 或 `never`；推荐 `auto`。 |
