@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/Yokumii/BTAssistantByr/internal/netretry"
 )
 
 const (
@@ -109,7 +111,7 @@ func (a *Authenticator) Login(ctx context.Context, username, password string) (C
 		Type:     "username",
 		Username: username,
 		Password: password,
-		Remember: false,
+		Remember: true,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -134,7 +136,11 @@ func (a *Authenticator) Login(ctx context.Context, username, password string) (C
 	defer response.Body.Close()
 
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusBadRequest {
-		return Credential{}, fmt.Errorf("%w: %s", ErrUnexpectedStatus, response.Status)
+		statusErr := fmt.Errorf("%w: %s", ErrUnexpectedStatus, response.Status)
+		if netretry.TransientStatus(response.StatusCode) {
+			statusErr = netretry.Transient(statusErr)
+		}
+		return Credential{}, statusErr
 	}
 
 	var result struct {
@@ -145,7 +151,7 @@ func (a *Authenticator) Login(ctx context.Context, username, password string) (C
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, maxResponseSize)).Decode(&result); err != nil {
-		return Credential{}, fmt.Errorf("%w: %v", ErrInvalidResponse, err)
+		return Credential{}, fmt.Errorf("%w: %w", ErrInvalidResponse, err)
 	}
 	if !result.Success || result.Code != http.StatusOK || strings.TrimSpace(result.Data.AuthToken) == "" {
 		return Credential{}, ErrAuthenticationFailed

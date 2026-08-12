@@ -13,7 +13,10 @@ client:
 
 strategy:
   max_disk_usage_gib: 500
+  # max_torrent_size_gib: 100
+  min_free_space_gib: 10
   refresh_interval: "121s"
+  queue_check_interval: "10s"
 
 execution:
   mode: "request_approval"
@@ -21,3 +24,6 @@ execution:
 runtime:
   data_dir: "data"
   log_dir: "logs"
+  log_level: "info"
+  log_color: "auto"
+  network_retry_count: 3

@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/Yokumii/BTAssistantByr/internal/netretry"
 )
 
 func TestAuthenticatorLogin(t *testing.T) {
@@ -36,7 +39,7 @@ func TestAuthenticatorLogin(t *testing.T) {
 			response.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		if payload.Type != "username" || payload.Username != "alice" || payload.Password != "secret" || payload.Remember {
+		if payload.Type != "username" || payload.Username != "alice" || payload.Password != "secret" || !payload.Remember {
 			t.Errorf("unexpected login payload: type=%q username=%q remember=%t", payload.Type, payload.Username, payload.Remember)
 		}
 
@@ -188,6 +191,28 @@ func TestAuthenticatorLoginRejectsInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestAuthenticatorLoginPreservesResponseBodyTimeout(t *testing.T) {
+	t.Parallel()
+
+	httpClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(deadlineReader{}),
+			Request:    request,
+		}, nil
+	})}
+	authenticator, err := NewAuthenticator("https://byr.example", httpClient)
+	if err != nil {
+		t.Fatalf("NewAuthenticator() error = %v", err)
+	}
+	_, err = authenticator.Login(context.Background(), "alice", "secret")
+	if !errors.Is(err, ErrInvalidResponse) || !errors.Is(err, context.DeadlineExceeded) || !netretry.IsTransient(err) {
+		t.Fatalf("login response timeout was not preserved: %v", err)
+	}
+}
+
 func TestAuthenticatorLoginRejectsUnexpectedStatus(t *testing.T) {
 	t.Parallel()
 
@@ -204,6 +229,9 @@ func TestAuthenticatorLoginRejectsUnexpectedStatus(t *testing.T) {
 	_, err = authenticator.Login(context.Background(), "alice", "secret")
 	if !errors.Is(err, ErrUnexpectedStatus) {
 		t.Fatalf("unexpected error: got %v, want %v", err, ErrUnexpectedStatus)
+	}
+	if !netretry.IsTransient(err) {
+		t.Fatalf("503 error was not marked transient: %v", err)
 	}
 }
 

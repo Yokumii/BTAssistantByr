@@ -1,10 +1,13 @@
 package byr
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Yokumii/BTAssistantByr/internal/netretry"
 )
 
 func TestParseTopFree(t *testing.T) {
@@ -53,6 +56,40 @@ func TestParseTopFreeRequiresTorrentTable(t *testing.T) {
 	if !errors.Is(err, ErrInvalidTorrentPage) {
 		t.Fatalf("error = %v, want ErrInvalidTorrentPage", err)
 	}
+}
+
+func TestPageParsersPreserveBodyReadTimeout(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		parse   func() error
+		wantErr error
+	}{
+		{name: "TopFree", parse: func() error { _, err := parseTopFree(deadlineReader{}); return err }, wantErr: ErrInvalidTorrentPage},
+		{name: "torrent hash", parse: func() error { _, err := parseTorrentHash(deadlineReader{}); return err }, wantErr: ErrTorrentHashNotFound},
+		{name: "passkey", parse: func() error { _, err := parsePasskey(deadlineReader{}); return err }, wantErr: ErrPasskeyNotFound},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := test.parse()
+			if !errors.Is(err, test.wantErr) {
+				t.Fatalf("error = %v, want %v", err, test.wantErr)
+			}
+			if !errors.Is(err, context.DeadlineExceeded) || !netretry.IsTransient(err) {
+				t.Fatalf("body read timeout was not preserved as transient: %v", err)
+			}
+		})
+	}
+}
+
+type deadlineReader struct{}
+
+func (deadlineReader) Read([]byte) (int, error) {
+	return 0, context.DeadlineExceeded
 }
 
 func TestParseSizeBytes(t *testing.T) {
