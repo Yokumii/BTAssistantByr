@@ -39,7 +39,7 @@ func TestAuthenticatorLogin(t *testing.T) {
 			response.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		if payload.Type != "username" || payload.Username != "alice" || payload.Password != "secret" || payload.Remember {
+		if payload.Type != "username" || payload.Username != "alice" || payload.Password != "secret" || !payload.Remember {
 			t.Errorf("unexpected login payload: type=%q username=%q remember=%t", payload.Type, payload.Username, payload.Remember)
 		}
 

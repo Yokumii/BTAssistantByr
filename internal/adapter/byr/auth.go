@@ -111,7 +111,7 @@ func (a *Authenticator) Login(ctx context.Context, username, password string) (C
 		Type:     "username",
 		Username: username,
 		Password: password,
-		Remember: false,
+		Remember: true,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
