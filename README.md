@@ -61,6 +61,13 @@ Windows PowerShell：
 .\btassistantbyr.exe -config .\config.yaml
 ```
 
+`-config` 的相对路径以启动时的工作目录为基准。省略该参数时固定读取 `config/config.yaml`；Release 中复制得到的 `config.yaml` 需要通过 `-config` 指定。使用 Windows Terminal 配置启动命令或进程守护工具时，请同时固定工作目录和参数，例如：
+
+```powershell
+Set-Location 'D:\BTAssistantByr'
+.\btassistantbyr.exe -config 'D:\BTAssistantByr\config.yaml'
+```
+
 ### 从源码运行
 
 源码构建需要 Go 1.24 或更高版本：
@@ -187,9 +194,13 @@ BYR 刷新成功后会立即检查一次队列。刷新重试仍失败时，旧�
 
 相邻网络重试固定等待 1 秒。连接错误、超时、HTTP `408`、`425`、`429` 和 `5xx` 会重试；权限拒绝、页面解析失败、配置错误、策略错误和用户拒绝批准不会被当成网络故障。
 
+BYR TopFree 列表页无法解析时，程序会记录包含解析原因的 WARN、使旧快照失效，并等待下一个 `strategy.refresh_interval` 再读取。它不会把异常页面视为空列表，也不会在恢复前使用旧快照推进队列；解析失败本身不触发网络重试。若持续出现 `invalid BYR torrent page: torrents table missing`，表示响应中缺少种子列表表格，应检查站点是否维护、代理是否返回异常页面以及账号能否正常打开种子页；该错误本身不能确定是会话过期。
+
 重试以单个 BYR/qBittorrent 调用为单位，不会重放整轮删除和下载计划。运行期间重试耗尽后，程序会跳过当前刷新或队列轮次并等待下一次调度。已经被远端确认完成的写操作不会自动回滚。
 
 终端日志按等级着色；文件日志始终不包含 ANSI 颜色码。日志不会记录密码、BYR Cookie、qBittorrent SID、passkey 或包含 passkey 的下载 URL。
+
+如果终端重启后出现 `open config/config.yaml: The system cannot find the path specified`，说明本次启动在当前工作目录下找不到默认配置路径。检查终端的启动命令是否保留 `-config`，并按上面的示例固定工作目录及配置绝对路径；这与 BYR 请求失败是两个独立问题。
 
 ## 队列、标签和删除范围
 

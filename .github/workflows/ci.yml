@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   verify:
-    name: verify
+    name: CI / verify
     runs-on: ubuntu-latest
     timeout-minutes: 15
 

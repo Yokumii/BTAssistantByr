@@ -9,7 +9,74 @@ import (
 
 	"github.com/Yokumii/BTAssistantByr/internal/domain"
 	"github.com/Yokumii/BTAssistantByr/internal/netretry"
+	"github.com/Yokumii/BTAssistantByr/internal/port"
 )
+
+func TestPollerDiscardsInvalidSnapshotsUntilRefreshRecovers(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name  string
+		valid []bool
+	}{
+		{name: "initial failures", valid: []bool{false, false, true}},
+		{name: "failures after valid snapshot", valid: []bool{true, false, false, true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			const refreshInterval = 10 * time.Minute
+			var fetches, recoveredHandles, failedWaits int
+			poller, err := NewPoller(sourceFunc(func(context.Context) ([]domain.Candidate, error) {
+				fetches++
+				if fetches > len(test.valid) {
+					return nil, errors.New("unexpected extra refresh")
+				}
+				if !test.valid[fetches-1] {
+					// Partial results must never reach the handler either.
+					return []domain.Candidate{{ID: "partial"}}, fmt.Errorf("parse page: %w", port.ErrInvalidTrackerSnapshot)
+				}
+				return []domain.Candidate{{ID: domain.TorrentID(fmt.Sprint(fetches))}}, nil
+			}), refreshInterval, time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := time.Date(2026, time.October, 21, 0, 0, 0, 0, time.UTC)
+			poller.now = func() time.Time { return now }
+			poller.waitUntil = func(ctx context.Context, wakeAt time.Time) error {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				if !test.valid[fetches-1] {
+					failedWaits++
+					if want := now.Add(refreshInterval); !wakeAt.Equal(want) {
+						t.Fatalf("invalid snapshot wakes at %s, want next refresh %s", wakeAt, want)
+					}
+				}
+				now = wakeAt
+				return nil
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			err = poller.Run(ctx, func(_ context.Context, candidates []domain.Candidate) error {
+				if !test.valid[fetches-1] {
+					t.Fatal("handler called while snapshot is invalid")
+				}
+				if len(candidates) != 1 || candidates[0].ID != domain.TorrentID(fmt.Sprint(fetches)) {
+					t.Fatalf("handler received stale or partial snapshot: %v", candidates)
+				}
+				if fetches == len(test.valid) {
+					recoveredHandles++
+					cancel()
+				}
+				return nil
+			})
+			if !errors.Is(err, context.Canceled) || recoveredHandles != 1 || failedWaits != 2 {
+				t.Fatalf("error = %v, recovered handles = %d, failed waits = %d", err, recoveredHandles, failedWaits)
+			}
+		})
+	}
+}
 
 type sourceFunc func(context.Context) ([]domain.Candidate, error)
 

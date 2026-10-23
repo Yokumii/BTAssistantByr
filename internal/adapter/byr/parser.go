@@ -45,7 +45,7 @@ func parseTopFree(reader io.Reader) ([]domain.Candidate, error) {
 		return hasClass(node, "torrents")
 	})
 	if table == nil {
-		return nil, ErrInvalidTorrentPage
+		return nil, fmt.Errorf("%w: torrents table missing", ErrInvalidTorrentPage)
 	}
 
 	var candidates []domain.Candidate

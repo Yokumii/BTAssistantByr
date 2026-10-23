@@ -178,7 +178,7 @@ func AssembleWithLogger(
 	return &Application{poller: poller, handler: coordinator.Handle, logger: logger}, nil
 }
 
-// Run refreshes tracker state and checks the queue until a non-network failure or cancellation.
+// Run refreshes tracker state and checks the queue until a terminal error or cancellation.
 func (application *Application) Run(ctx context.Context) error {
 	application.logger.InfoContext(ctx, "BTAssistantByr started; press Ctrl+C to stop")
 	err := application.poller.Run(ctx, application.handler)
