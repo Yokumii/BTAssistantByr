@@ -14,7 +14,64 @@ import (
 
 	"github.com/Yokumii/BTAssistantByr/internal/domain"
 	"github.com/Yokumii/BTAssistantByr/internal/netretry"
+	"github.com/Yokumii/BTAssistantByr/internal/port"
 )
+
+func TestClientRejectsInvalidSnapshotWithoutNetworkRetries(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name string
+		page string
+	}{
+		{name: "missing table", page: "<html><body>unavailable</body></html>"},
+		{name: "malformed candidate", page: torrentPageFixture("unknown", "12", "3")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			requests := 0
+			httpClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				requests++
+				if request.URL.Path != "/torrents.php" {
+					t.Errorf("unexpected request to %s", request.URL.Path)
+				}
+				page := test.page
+				if requests > 1 {
+					page = `<table class="torrents"></table>`
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(page)),
+					Request:    request,
+				}, nil
+			})}
+			authenticator, err := NewAuthenticator("https://byr.example", httpClient)
+			if err != nil {
+				t.Fatal(err)
+			}
+			client, err := authenticator.NewClient(Credential{AuthToken: "auth-value"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			tracker := netretry.NewTracker(client, netretry.Policy{Retries: 3})
+			candidates, err := tracker.ListTopFree(context.Background())
+			if !errors.Is(err, port.ErrInvalidTrackerSnapshot) || !errors.Is(err, ErrInvalidTorrentPage) {
+				t.Fatalf("error = %v, want invalid snapshot and invalid torrent page", err)
+			}
+			if candidates != nil || netretry.IsTransient(err) || requests != 1 {
+				t.Fatalf("candidates = %v, transient = %v, requests = %d", candidates, netretry.IsTransient(err), requests)
+			}
+
+			candidates, err = tracker.ListTopFree(context.Background())
+			if err != nil || len(candidates) != 0 || requests != 2 {
+				t.Fatalf("recovered snapshot = %v, error = %v, requests = %d", candidates, err, requests)
+			}
+		})
+	}
+}
 
 func TestClientListTopFreeAuthenticatesAndCachesHash(t *testing.T) {
 	t.Parallel()

@@ -9,6 +9,7 @@ import (
 
 	"github.com/Yokumii/BTAssistantByr/internal/domain"
 	"github.com/Yokumii/BTAssistantByr/internal/netretry"
+	"github.com/Yokumii/BTAssistantByr/internal/port"
 )
 
 var (
@@ -36,6 +37,8 @@ type Poller struct {
 	refreshInterval    time.Duration
 	queueCheckInterval time.Duration
 	logger             *slog.Logger
+	now                func() time.Time
+	waitUntil          func(context.Context, time.Time) error
 }
 
 // SetLogger enables structured lifecycle logging. It must be called before Run.
@@ -54,11 +57,17 @@ func NewPoller(source Source, refreshInterval, queueCheckInterval time.Duration)
 	if queueCheckInterval <= 0 {
 		return nil, ErrInvalidQueueCheckInterval
 	}
-	return &Poller{source: source, refreshInterval: refreshInterval, queueCheckInterval: queueCheckInterval}, nil
+	return &Poller{
+		source:             source,
+		refreshInterval:    refreshInterval,
+		queueCheckInterval: queueCheckInterval,
+		now:                time.Now,
+		waitUntil:          waitUntil,
+	}, nil
 }
 
 // Run blocks until cancellation or a terminal error. Exhausted transient network
-// failures and temporary disk shortages skip the current strategy cycle.
+// failures, invalid tracker snapshots and temporary disk shortages skip the cycle.
 func (p *Poller) Run(ctx context.Context, handler Handler) error {
 	if handler == nil {
 		return ErrHandlerRequired
@@ -67,7 +76,7 @@ func (p *Poller) Run(ctx context.Context, handler Handler) error {
 		return err
 	}
 
-	nextRefresh := time.Now()
+	nextRefresh := p.now()
 	var nextQueueCheck time.Time
 	var snapshot []domain.Candidate
 	snapshotValid := false
@@ -75,7 +84,7 @@ func (p *Poller) Run(ctx context.Context, handler Handler) error {
 	queueRound := int64(0)
 
 	for {
-		now := time.Now()
+		now := p.now()
 		if !nextRefresh.After(now) {
 			refreshRound++
 			started := time.Now()
@@ -83,19 +92,24 @@ func (p *Poller) Run(ctx context.Context, handler Handler) error {
 				p.logger.DebugContext(ctx, "TopFree tracker refresh started", "round", refreshRound)
 			}
 			candidates, err := p.source.ListTopFree(ctx)
-			nextRefresh = time.Now().Add(p.refreshInterval)
+			nextRefresh = p.now().Add(p.refreshInterval)
 			if err != nil {
 				if ctxErr := ctx.Err(); ctxErr != nil {
 					return ctxErr
 				}
-				if !netretry.IsTransient(err) {
+				invalidSnapshot := errors.Is(err, port.ErrInvalidTrackerSnapshot)
+				if !netretry.IsTransient(err) && !invalidSnapshot {
 					return fmt.Errorf("list TopFree torrents: %w", err)
 				}
 				snapshot = nil
 				snapshotValid = false
 				nextQueueCheck = time.Time{}
 				if p.logger != nil {
-					p.logger.WarnContext(ctx, "TopFree tracker refresh skipped after network retries",
+					message := "TopFree tracker refresh skipped after network retries"
+					if invalidSnapshot && !netretry.IsTransient(err) {
+						message = "TopFree tracker refresh skipped because snapshot is invalid"
+					}
+					p.logger.WarnContext(ctx, message,
 						"round", refreshRound,
 						"next_refresh_in", p.refreshInterval,
 						"error", err,
@@ -111,7 +125,7 @@ func (p *Poller) Run(ctx context.Context, handler Handler) error {
 			if err := p.handle(ctx, handler, snapshot, "tracker_refresh", refreshRound); err != nil {
 				return err
 			}
-			nextQueueCheck = time.Now().Add(p.queueCheckInterval)
+			nextQueueCheck = p.now().Add(p.queueCheckInterval)
 			continue
 		}
 
@@ -123,7 +137,7 @@ func (p *Poller) Run(ctx context.Context, handler Handler) error {
 			if err := p.handle(ctx, handler, snapshot, "queue_check", queueRound); err != nil {
 				return err
 			}
-			nextQueueCheck = time.Now().Add(p.queueCheckInterval)
+			nextQueueCheck = p.now().Add(p.queueCheckInterval)
 			continue
 		}
 
@@ -131,13 +145,20 @@ func (p *Poller) Run(ctx context.Context, handler Handler) error {
 		if snapshotValid && nextQueueCheck.Before(wakeAt) {
 			wakeAt = nextQueueCheck
 		}
-		timer := time.NewTimer(time.Until(wakeAt))
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return ctx.Err()
-		case <-timer.C:
+		if err := p.waitUntil(ctx, wakeAt); err != nil {
+			return err
 		}
+	}
+}
+
+func waitUntil(ctx context.Context, wakeAt time.Time) error {
+	timer := time.NewTimer(time.Until(wakeAt))
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 

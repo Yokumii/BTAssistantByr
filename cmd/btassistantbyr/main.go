@@ -31,7 +31,7 @@ func main() {
 		if errors.Is(err, flag.ErrHelp) {
 			return
 		}
-		fmt.Fprintf(os.Stderr, "BTAssistantByr 启动失败：%v\n", err)
+		fmt.Fprintf(os.Stderr, "BTAssistantByr 运行失败：%v\n", err)
 		os.Exit(1)
 	}
 }

@@ -156,7 +156,7 @@ func (c *Client) ListTopFree(ctx context.Context) ([]domain.Candidate, error) {
 
 	candidates, err := parseTopFree(io.LimitReader(response.Body, maxPageSize))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", port.ErrInvalidTrackerSnapshot, err)
 	}
 	for index := range candidates {
 		hash, err := c.TorrentHash(ctx, candidates[index].ID)
