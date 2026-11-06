@@ -50,6 +50,7 @@ type MutationClient interface {
 
 // Executor applies a previously computed Plan. It is not started automatically.
 type Executor struct {
+	now                func() time.Time
 	source             DownloadURLSource
 	client             MutationClient
 	savePath           string
@@ -76,6 +77,7 @@ func NewExecutor(source DownloadURLSource, client MutationClient, savePath strin
 		return nil, ErrInvalidFreeSpaceReserve
 	}
 	return &Executor{
+		now:                time.Now,
 		source:             source,
 		client:             client,
 		savePath:           strings.TrimSpace(savePath),
@@ -93,6 +95,9 @@ func (e *Executor) Execute(ctx context.Context, plan Plan) error {
 	}
 	prepared, err := prepareExecutionPlan(plan)
 	if err != nil {
+		return err
+	}
+	if err := e.verifyBonusFreshness(plan); err != nil {
 		return err
 	}
 	if e.logger != nil {
@@ -114,6 +119,9 @@ func (e *Executor) Execute(ctx context.Context, plan Plan) error {
 	if err := e.verifyDiskSpaceBeforeWrites(ctx, prepared); err != nil {
 		return err
 	}
+	if err := e.verifyBonusFreshness(plan); err != nil {
+		return err
+	}
 	if err := e.removeExpiredDownloads(ctx, prepared.removeExpired); err != nil {
 		return err
 	}
@@ -128,10 +136,16 @@ func (e *Executor) Execute(ctx context.Context, plan Plan) error {
 		return err
 	}
 
+	if err := e.verifyBonusFreshness(plan); err != nil {
+		return err
+	}
 	if err := e.cleanupDownloads(ctx, prepared.downloads); err != nil {
 		return err
 	}
 	if err := e.verifyDiskSpaceAfterCleanup(ctx, prepared); err != nil {
+		return err
+	}
+	if err := e.verifyBonusFreshness(plan); err != nil {
 		return err
 	}
 	for _, download := range prepared.downloads {
@@ -145,6 +159,22 @@ func (e *Executor) Execute(ctx context.Context, plan Plan) error {
 			level = slog.LevelInfo
 		}
 		e.logger.Log(ctx, level, "TopFree execution plan completed")
+	}
+	return nil
+}
+
+func (e *Executor) verifyBonusFreshness(plan Plan) error {
+	if plan.Bonus == nil {
+		return nil
+	}
+	now := e.now()
+	if plan.Bonus.ObservedAt.IsZero() || !plan.Bonus.ValidUntil.After(plan.Bonus.ObservedAt) || now.Before(plan.Bonus.ObservedAt) || !now.Before(plan.Bonus.ValidUntil) {
+		return fmt.Errorf("%w: bonus plan expired; rebuild before further writes", port.ErrInvalidTrackerSnapshot)
+	}
+	for _, download := range plan.Downloads {
+		if !download.Candidate.FreeUntil.After(now) {
+			return fmt.Errorf("%w: bonus candidate free period expired", port.ErrInvalidTrackerSnapshot)
+		}
 	}
 	return nil
 }

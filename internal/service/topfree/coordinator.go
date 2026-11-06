@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Yokumii/BTAssistantByr/internal/domain"
+	"github.com/Yokumii/BTAssistantByr/internal/port"
 )
 
 var (
@@ -33,6 +34,9 @@ type PlanExecutor interface {
 
 // Coordinator connects one TopFree snapshot to planning and explicit execution.
 type Coordinator struct {
+	bonusSource         port.BonusTracker
+	bonusInterval       time.Duration
+	bonusSnapshot       *BonusSnapshot
 	managedSource       ManagedTorrentSource
 	executor            PlanExecutor
 	maxDiskUsageBytes   int64
@@ -137,18 +141,29 @@ func (c *Coordinator) RunOnce(ctx context.Context, candidates []domain.Candidate
 	if c.logger != nil && len(queue.removed) > 0 {
 		c.logger.InfoContext(ctx, "removed torrents no longer TopFree from download queue", "hashes", queue.removed)
 	}
-	plan, err := BuildQueuedPlanWithDiskSpace(
-		c.maxDiskUsageBytes,
-		diskSpace,
-		c.minFreeSpaceBytes,
-		c.now(),
-		candidates,
-		queue.candidates,
-		managed,
-		queue.downloadBlocked,
-	)
-	if err != nil {
-		return Plan{}, fmt.Errorf("build TopFree plan: %w", err)
+	var plan Plan
+	if c.bonusSource == nil {
+		plan, err = BuildQueuedPlanWithDiskSpace(c.maxDiskUsageBytes, diskSpace, c.minFreeSpaceBytes,
+			c.now(), candidates, queue.candidates, managed, queue.downloadBlocked)
+		if err != nil {
+			return Plan{}, fmt.Errorf("build TopFree plan: %w", err)
+		}
+	} else {
+		bonus, err := c.loadBonusSnapshot(ctx, queue.candidates)
+		if err != nil {
+			return Plan{}, fmt.Errorf("load TopFree bonus snapshot: %w", err)
+		}
+		plan, err = BuildBonusPlanWithDiskSpace(c.maxDiskUsageBytes, diskSpace, c.minFreeSpaceBytes,
+			c.now(), c.bonusInterval, candidates, queue.candidates, managed, queue.downloadBlocked, bonus)
+		if err != nil {
+			return Plan{}, fmt.Errorf("build TopFree bonus plan: %w", err)
+		}
+		if c.logger != nil {
+			c.logger.InfoContext(ctx, "TopFree bonus estimate", "estimate", plan.Bonus)
+			if len(plan.BonusUnavailable) > 0 {
+				c.logger.WarnContext(ctx, "excluded cleanup torrents with unknown bonus metadata", "hashes", plan.BonusUnavailable)
+			}
+		}
 	}
 	if c.logger != nil {
 		c.logger.InfoContext(ctx, "TopFree plan built",
@@ -176,10 +191,14 @@ func (c *Coordinator) RunOnce(ctx context.Context, candidates []domain.Candidate
 		)
 	}
 	if err := c.executor.Execute(ctx, plan); err != nil {
+		c.bonusSnapshot = nil
 		return plan, fmt.Errorf("execute TopFree plan: %w", err)
 	}
 	if len(plan.Downloads) == 1 {
 		c.queue.markSubmitted(plan.Downloads[0].Candidate.Hash)
+	}
+	if planHasWrites(plan) {
+		c.bonusSnapshot = nil
 	}
 	return plan, nil
 }

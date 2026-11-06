@@ -60,7 +60,7 @@ func TestLoad(t *testing.T) {
 	if configuration.Client.BaseURL != "http://127.0.0.1:8080/webui/" || configuration.Client.Username != "qbt-user" || configuration.Client.Password != " client password " || configuration.Client.SavePath != "/downloads" {
 		t.Errorf("unexpected client configuration")
 	}
-	if configuration.Strategy.MaxDiskUsageBytes != 500*(1<<30) || configuration.Strategy.MaxTorrentSizeBytes != 100*(1<<30) || configuration.Strategy.MinFreeSpaceBytes != 10*(1<<30) || configuration.Strategy.RefreshInterval != 121*time.Second || configuration.Strategy.QueueCheckInterval != 10*time.Second {
+	if configuration.Strategy.Priority != "free_time" || configuration.Strategy.MaxDiskUsageBytes != 500*(1<<30) || configuration.Strategy.MaxTorrentSizeBytes != 100*(1<<30) || configuration.Strategy.MinFreeSpaceBytes != 10*(1<<30) || configuration.Strategy.RefreshInterval != 121*time.Second || configuration.Strategy.QueueCheckInterval != 10*time.Second {
 		t.Errorf("unexpected strategy configuration: %+v", configuration.Strategy)
 	}
 	if configuration.Execution.Mode != domain.ExecutionModeRequestApproval {
@@ -79,6 +79,8 @@ func TestLoadRejectsInvalidConfiguration(t *testing.T) {
 		content string
 	}{
 		{name: "unknown field", content: strings.Replace(validYAML, "  cookie:", "  unexpected: true\n  cookie:", 1)},
+		{name: "invalid priority", content: strings.Replace(validYAML, "strategy:\n", "strategy:\n  priority: unknown\n", 1)},
+		{name: "blank priority", content: strings.Replace(validYAML, "strategy:\n", "strategy:\n  priority: \"\"\n", 1)},
 		{name: "invalid YAML", content: "tracker: ["},
 		{name: "multiple documents", content: validYAML + "---\ntracker: {}\n"},
 		{name: "missing tracker username", content: strings.Replace(validYAML, `username: " byr-user "`, `username: ""`, 1)},
@@ -136,6 +138,17 @@ func TestLoadAcceptsYOLOExecutionMode(t *testing.T) {
 	}
 	if configuration.Execution.Mode != domain.ExecutionModeYOLO {
 		t.Errorf("execution mode = %q, want %q", configuration.Execution.Mode, domain.ExecutionModeYOLO)
+	}
+}
+
+func TestLoadBonusPriority(t *testing.T) {
+	t.Parallel()
+	configuration, err := Load(writeConfig(t, strings.Replace(validYAML, "strategy:\n", "strategy:\n  priority: \" BONUS \"\n", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configuration.Strategy.Priority != "bonus" {
+		t.Fatalf("priority = %q", configuration.Strategy.Priority)
 	}
 }
 

@@ -40,8 +40,9 @@ type CredentialRefresh func(context.Context) (Credential, error)
 
 // Client accesses authenticated BYR tracker pages.
 type Client struct {
-	baseURL    *url.URL
-	httpClient *http.Client
+	metadataCache map[domain.TorrentID]domain.TorrentMetadata
+	baseURL       *url.URL
+	httpClient    *http.Client
 
 	credentialMu         sync.RWMutex
 	credential           Credential

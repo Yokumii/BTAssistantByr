@@ -35,6 +35,8 @@ type Client struct {
 
 // Strategy contains TopFree strategy settings.
 type Strategy struct {
+	// Priority is free_time (the documented default) or bonus.
+	Priority            string
 	MaxDiskUsageBytes   int64
 	MaxTorrentSizeBytes int64
 	MinFreeSpaceBytes   int64

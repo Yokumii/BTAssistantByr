@@ -55,11 +55,12 @@ type yamlClient struct {
 }
 
 type yamlStrategy struct {
-	MaxDiskUsageGiB    int64  `yaml:"max_disk_usage_gib"`
-	MaxTorrentSizeGiB  *int64 `yaml:"max_torrent_size_gib"`
-	MinFreeSpaceGiB    int64  `yaml:"min_free_space_gib"`
-	RefreshInterval    string `yaml:"refresh_interval"`
-	QueueCheckInterval string `yaml:"queue_check_interval"`
+	Priority           *string `yaml:"priority"`
+	MaxDiskUsageGiB    int64   `yaml:"max_disk_usage_gib"`
+	MaxTorrentSizeGiB  *int64  `yaml:"max_torrent_size_gib"`
+	MinFreeSpaceGiB    int64   `yaml:"min_free_space_gib"`
+	RefreshInterval    string  `yaml:"refresh_interval"`
+	QueueCheckInterval string  `yaml:"queue_check_interval"`
 }
 
 type yamlExecution struct {
@@ -113,6 +114,13 @@ func Load(path string) (Config, error) {
 }
 
 func validate(raw yamlConfig) (Config, error) {
+	priority := "free_time"
+	if raw.Strategy.Priority != nil {
+		priority = strings.ToLower(strings.TrimSpace(*raw.Strategy.Priority))
+		if !oneOf(priority, "free_time", "bonus") {
+			return Config{}, fieldError("strategy.priority", "must be free_time or bonus")
+		}
+	}
 	raw.Tracker.BaseURL = strings.TrimSpace(raw.Tracker.BaseURL)
 	raw.Tracker.ProxyURL = strings.TrimSpace(raw.Tracker.ProxyURL)
 	raw.Tracker.Username = strings.TrimSpace(raw.Tracker.Username)
@@ -221,6 +229,7 @@ func validate(raw yamlConfig) (Config, error) {
 			SavePath: raw.Client.SavePath,
 		},
 		Strategy: Strategy{
+			Priority:            priority,
 			MaxDiskUsageBytes:   raw.Strategy.MaxDiskUsageGiB * gib,
 			MaxTorrentSizeBytes: maxTorrentSizeBytes,
 			MinFreeSpaceBytes:   raw.Strategy.MinFreeSpaceGiB * gib,

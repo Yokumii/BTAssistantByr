@@ -49,6 +49,8 @@ const (
 	SkipInsufficientSpace SkipReason = "insufficient_space"
 	// SkipFreePeriodExpired means the tracker deadline has already elapsed.
 	SkipFreePeriodExpired SkipReason = "free_period_expired"
+	SkipBonusUnavailable  SkipReason = "bonus_metadata_unavailable"
+	SkipNoBonusGain       SkipReason = "no_bonus_gain"
 )
 
 // DownloadPlan describes cleanup that must complete before adding one candidate.
@@ -66,6 +68,8 @@ type SkippedCandidate struct {
 
 // Plan is a deterministic, side-effect-free set of TopFree decisions.
 type Plan struct {
+	Bonus                   *BonusEstimate
+	BonusUnavailable        []domain.TorrentHash
 	TagAsManaged            []domain.TorrentHash
 	UnmarkForDeletion       []domain.TorrentHash
 	MarkForDeletion         []domain.TorrentHash

@@ -174,6 +174,12 @@ func (p *Poller) handle(ctx context.Context, handler Handler, snapshot []domain.
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr
 	}
+	if errors.Is(err, port.ErrInvalidTrackerSnapshot) {
+		if p.logger != nil {
+			p.logger.WarnContext(ctx, "TopFree queue cycle skipped because tracker metadata is invalid", "error", err, "next_queue_check_in", p.queueCheckInterval)
+		}
+		return nil
+	}
 	if errors.Is(err, ErrInsufficientDiskSpace) {
 		if p.logger != nil {
 			p.logger.WarnContext(ctx, "TopFree queue cycle deferred until disk space is available",

@@ -60,6 +60,7 @@ func AssembleWithLogger(
 		"execution_mode", configuration.Execution.Mode,
 		"refresh_interval", configuration.Strategy.RefreshInterval,
 		"queue_check_interval", configuration.Strategy.QueueCheckInterval,
+		"strategy_priority", configuration.Strategy.Priority,
 		"network_retry_count", configuration.Runtime.NetworkRetryCount,
 	)
 	approver, err := executionApprover(configuration.Execution.Mode, approvalInput, approvalOutput)
@@ -168,6 +169,11 @@ func AssembleWithLogger(
 		return nil, fmt.Errorf("create TopFree coordinator: %w", err)
 	}
 	coordinator.SetLogger(rootLogger.With("component", "topfree_coordinator"))
+	if configuration.Strategy.Priority == "bonus" {
+		if err := coordinator.EnableBonusPriority(netretry.NewBonusTracker(byrClient, retryPolicy), configuration.Strategy.RefreshInterval); err != nil {
+			return nil, fmt.Errorf("configure TopFree bonus priority: %w", err)
+		}
+	}
 	poller, err := topfree.NewPoller(retryingTracker, configuration.Strategy.RefreshInterval, configuration.Strategy.QueueCheckInterval)
 	if err != nil {
 		return nil, fmt.Errorf("create TopFree poller: %w", err)
