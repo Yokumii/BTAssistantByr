@@ -2,7 +2,6 @@
 package logging
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -74,11 +73,7 @@ func New(options Options) (*System, error) {
 		AddSource: level == slog.LevelDebug,
 		Level:     level,
 	}
-	consoleOutput := options.Console
-	if color {
-		consoleOutput = colorWriter{writer: options.Console}
-	}
-	consoleHandler := slog.NewTextHandler(consoleOutput, handlerOptions)
+	consoleHandler := newConsoleHandler(options.Console, level, color)
 	fileHandler := slog.NewTextHandler(file, handlerOptions)
 	return &System{
 		logger:   slog.New(fanoutHandler{consoleHandler, fileHandler}),
@@ -176,45 +171,4 @@ func (handler fanoutHandler) WithGroup(name string) slog.Handler {
 		children[index] = child.WithGroup(name)
 	}
 	return children
-}
-
-type colorWriter struct {
-	writer io.Writer
-}
-
-func (writer colorWriter) Write(payload []byte) (int, error) {
-	color := levelColor(payload)
-	if color == "" {
-		return writer.writer.Write(payload)
-	}
-	colored := make([]byte, 0, len(color)+len(payload)+len(ansiReset))
-	colored = append(colored, color...)
-	colored = append(colored, payload...)
-	colored = append(colored, ansiReset...)
-	written, err := writer.writer.Write(colored)
-	if written <= len(color) {
-		return 0, err
-	}
-	written -= len(color)
-	if written > len(payload) {
-		written = len(payload)
-	}
-	return written, err
-}
-
-const ansiReset = "\x1b[0m"
-
-func levelColor(payload []byte) string {
-	switch {
-	case bytes.Contains(payload, []byte(" level=DEBUG ")):
-		return "\x1b[36m"
-	case bytes.Contains(payload, []byte(" level=INFO ")):
-		return "\x1b[32m"
-	case bytes.Contains(payload, []byte(" level=WARN ")):
-		return "\x1b[33m"
-	case bytes.Contains(payload, []byte(" level=ERROR ")):
-		return "\x1b[31m"
-	default:
-		return ""
-	}
 }

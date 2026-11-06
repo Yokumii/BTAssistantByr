@@ -102,7 +102,7 @@ func (c *Coordinator) RunOnce(ctx context.Context, candidates []domain.Candidate
 		return Plan{}, fmt.Errorf("check qBittorrent free space before planning: %w", err)
 	}
 	if c.logger != nil {
-		c.logger.InfoContext(ctx, "qBittorrent disk space checked before planning",
+		c.logger.DebugContext(ctx, "qBittorrent disk space checked before planning",
 			"save_path", diskSpace.Path,
 			"free_bytes", diskSpace.FreeBytes,
 			"reserve_bytes", c.minFreeSpaceBytes,
@@ -123,7 +123,7 @@ func (c *Coordinator) RunOnce(ctx context.Context, candidates []domain.Candidate
 	manageable := torrentsInManagementScope(managed)
 	if c.logger != nil {
 		if len(oversizedCandidates) > 0 {
-			c.logger.InfoContext(ctx, "excluded oversized TopFree torrents from download queue",
+			c.logger.DebugContext(ctx, "excluded oversized TopFree torrents from download queue",
 				"excluded", len(oversizedCandidates),
 				"max_torrent_size_bytes", c.maxTorrentSizeBytes,
 			)
@@ -159,14 +159,26 @@ func (c *Coordinator) RunOnce(ctx context.Context, candidates []domain.Candidate
 			return Plan{}, fmt.Errorf("build TopFree bonus plan: %w", err)
 		}
 		if c.logger != nil {
-			c.logger.InfoContext(ctx, "TopFree bonus estimate", "estimate", plan.Bonus)
+			c.logger.DebugContext(ctx, "TopFree bonus estimate",
+				"observed_at", plan.Bonus.ObservedAt,
+				"valid_until", plan.Bonus.ValidUntil,
+				"reported_a", plan.Bonus.ReportedA,
+				"before_a", plan.Bonus.BeforeA,
+				"after_a", plan.Bonus.AfterA,
+				"before_per_hour", plan.Bonus.BeforePerHour,
+				"after_per_hour", plan.Bonus.AfterPerHour,
+				"added_a", plan.Bonus.AddedA,
+				"removed_a", plan.Bonus.RemovedA,
+				"net_per_hour", plan.Bonus.NetPerHour,
+				"replacement_gain_per_hour", plan.Bonus.ReplacementGainPerHour,
+			)
 			if len(plan.BonusUnavailable) > 0 {
 				c.logger.WarnContext(ctx, "excluded cleanup torrents with unknown bonus metadata", "hashes", plan.BonusUnavailable)
 			}
 		}
 	}
 	if c.logger != nil {
-		c.logger.InfoContext(ctx, "TopFree plan built",
+		c.logger.DebugContext(ctx, "TopFree plan built",
 			"tag_as_managed", len(plan.TagAsManaged),
 			"unmark_for_deletion", len(plan.UnmarkForDeletion),
 			"mark_for_deletion", len(plan.MarkForDeletion),

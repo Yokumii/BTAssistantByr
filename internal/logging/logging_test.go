@@ -32,7 +32,7 @@ func TestSystemFiltersColorsAndPersistsLogs(t *testing.T) {
 	}
 
 	consoleText := console.String()
-	for _, expected := range []string{"\x1b[32m", "\x1b[33m", "\x1b[31m", "level=INFO", "component=test"} {
+	for _, expected := range []string{"\x1b[32mINFO ", "\x1b[33mWARN ", "\x1b[31mERROR", "[test] started"} {
 		if !strings.Contains(consoleText, expected) {
 			t.Errorf("console log does not contain %q:\n%s", expected, consoleText)
 		}
@@ -68,13 +68,23 @@ func TestDebugLogsIncludeSourceAndAttributes(t *testing.T) {
 	if err := system.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
-	for _, expected := range []string{"level=DEBUG", "source=", "operation=preflight"} {
+	for _, expected := range []string{"DEBUG", "(logging/logging_test.go:", "operation=preflight"} {
 		if !strings.Contains(console.String(), expected) {
 			t.Errorf("DEBUG log does not contain %q:\n%s", expected, console.String())
 		}
 	}
 	if strings.Contains(console.String(), "\x1b[") {
 		t.Errorf("never color mode emitted ANSI: %s", console.String())
+	}
+	if strings.Contains(console.String(), "source=") || strings.Contains(console.String(), "time=") {
+		t.Errorf("console contains structured metadata: %s", console.String())
+	}
+	contents, err := os.ReadFile(system.FilePath())
+	if err != nil {
+		t.Fatalf("read log file: %v", err)
+	}
+	if !strings.Contains(string(contents), "source=") || !strings.Contains(string(contents), "level=DEBUG") {
+		t.Errorf("file log lost structured debug metadata: %s", contents)
 	}
 }
 

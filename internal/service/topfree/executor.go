@@ -352,6 +352,9 @@ func (e *Executor) addTags(ctx context.Context, hashes []domain.TorrentHash, tag
 	if err := e.client.AddTags(ctx, hashes, []string{tag}); err != nil {
 		return fmt.Errorf("%s: %w", operation, err)
 	}
+	if e.logger != nil {
+		e.logger.InfoContext(ctx, "qBittorrent tags added", "hashes", hashes, "tag", tag)
+	}
 	return nil
 }
 
@@ -367,6 +370,9 @@ func (e *Executor) removeTags(ctx context.Context, hashes []domain.TorrentHash, 
 	}
 	if err := e.client.RemoveTags(ctx, hashes, []string{tag}); err != nil {
 		return fmt.Errorf("%s: %w", operation, err)
+	}
+	if e.logger != nil {
+		e.logger.InfoContext(ctx, "qBittorrent tags removed", "hashes", hashes, "tag", tag)
 	}
 	return nil
 }
@@ -446,6 +452,9 @@ func (e *Executor) removeExpiredDownloads(ctx context.Context, torrents []domain
 	if err := e.client.Delete(ctx, hashes, true); err != nil {
 		return fmt.Errorf("delete downloads no longer TopFree: %w", err)
 	}
+	if e.logger != nil {
+		e.logger.InfoContext(ctx, "deleted downloads no longer TopFree", "hashes", hashes, "delete_files", true)
+	}
 	return nil
 }
 
@@ -483,6 +492,9 @@ func (e *Executor) cleanupDownloads(ctx context.Context, downloads []preparedDow
 		}
 		if err := e.client.Delete(ctx, hashes, true); err != nil {
 			return fmt.Errorf("delete cleanup torrents: %w", err)
+		}
+		if e.logger != nil {
+			e.logger.InfoContext(ctx, "deleted cleanup torrents", "hashes", hashes, "delete_files", true)
 		}
 	}
 	return nil
@@ -604,6 +616,9 @@ func (e *Executor) addDownload(ctx context.Context, download preparedDownload) e
 		Tags:      []string{ManagedTag},
 	}); err != nil {
 		return fmt.Errorf("add TopFree torrent %s: %w", download.candidate.ID, err)
+	}
+	if e.logger != nil {
+		e.logger.InfoContext(ctx, "TopFree torrent added", "torrent_id", download.candidate.ID, "name", download.candidate.Name, "save_path", e.savePath, "tag", ManagedTag)
 	}
 	return nil
 }

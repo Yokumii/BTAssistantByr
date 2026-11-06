@@ -120,7 +120,7 @@ func (p *Poller) Run(ctx context.Context, handler Handler) error {
 			snapshot = append(snapshot[:0], candidates...)
 			snapshotValid = true
 			if p.logger != nil {
-				p.logger.InfoContext(ctx, "TopFree snapshot refreshed", "round", refreshRound, "candidates", len(snapshot), "duration", time.Since(started))
+				p.logger.DebugContext(ctx, "TopFree snapshot refreshed", "round", refreshRound, "candidates", len(snapshot), "duration", time.Since(started))
 			}
 			if err := p.handle(ctx, handler, snapshot, "tracker_refresh", refreshRound); err != nil {
 				return err

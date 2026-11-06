@@ -191,7 +191,7 @@ BYR 刷新成功后会立即检查一次队列。刷新重试仍失败时，旧�
 | --- | --- |
 | `runtime.data_dir` | 运行数据目录；包含敏感的 BYR 会话缓存 `byr_session.json`，不要共享或公开。 |
 | `runtime.log_dir` | 文件日志目录，日志文件为 `btassistantbyr.log`。 |
-| `runtime.log_level` | `debug`、`info`、`warn` 或 `error`。排查问题时使用 `debug`。 |
+| `runtime.log_level` | `debug`、`info`、`warn` 或 `error`；同时控制终端和文件。日常运行使用 `info`，排查问题时使用 `debug`。 |
 | `runtime.log_color` | `auto`、`always` 或 `never`；推荐 `auto`。 |
 | `runtime.network_retry_count` | 额外网络重试次数，范围 `0..100`；配置 `3` 表示总共最多尝试 4 次。 |
 
@@ -201,7 +201,18 @@ BYR TopFree 列表页无法解析时，程序会记录包含解析原因的 WARN
 
 重试以单个 BYR/qBittorrent 调用为单位，不会重放整轮删除和下载计划。运行期间重试耗尽后，程序会跳过当前刷新或队列轮次并等待下一次调度。已经被远端确认完成的写操作不会自动回滚。
 
-终端日志按等级着色；文件日志始终不包含 ANSI 颜色码。日志不会记录密码、BYR Cookie、qBittorrent SID、passkey 或包含 passkey 的下载 URL。
+终端使用紧凑格式，依次展示本地日期时间（毫秒精度）、等级、模块、消息和 `key=value` 参数。例如：
+
+```text
+2026-11-06 16:59:00.742 DEBUG [topfree_coordinator] qBittorrent management scope applied in_scope=21 out_of_scope=76  (topfree/coordinator.go:132)
+2026-11-06 16:59:00.743 DEBUG [topfree_coordinator] qBittorrent disk space checked before planning save_path=/downloads free=128.50GiB reserve=20.00GiB  (topfree/coordinator.go:105)
+```
+
+启用颜色时，仅等级使用彩色，时间和源码位置使用弱化样式。`debug` 配置下，所有日志的末尾附带缩短后的源码位置；其他等级配置不展示源码位置。磁盘空间等已知容量字段在终端转换为保留两位小数的 GiB，仅用于展示，精确字节数以文件日志为准。消息和参数中的换行、终端控制字符会转义，避免打断单条日志。
+
+`info` 主要记录启动、停止、批准、实际完成的标签修改、删除和新增下载，以及执行结果；常规 TopFree 快照刷新、空间查询、大小过滤、计划计算和魔力估算明细记录为 `debug`。快照失效、重试和空间不足延后等情况仍保留 WARN。删除成功日志表示 qBittorrent 已确认删除请求，空间是否实际释放由后续空间复检日志说明。
+
+文件日志继续使用包含 `time=`、`level=`、`msg=` 和业务字段的结构化文本格式，保留完整时间和时区、原始容量字节数；`debug` 配置下保留完整源码位置。文件日志始终不包含 ANSI 颜色码。日志不会记录密码、BYR Cookie、qBittorrent SID、passkey 或包含 passkey 的下载 URL。
 
 如果终端重启后出现 `open config/config.yaml: The system cannot find the path specified`，说明本次启动在当前工作目录下找不到默认配置路径。检查终端的启动命令是否保留 `-config`，并按上面的示例固定工作目录及配置绝对路径；这与 BYR 请求失败是两个独立问题。
 
