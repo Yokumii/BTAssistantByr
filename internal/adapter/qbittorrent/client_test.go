@@ -405,6 +405,9 @@ func TestClientMarksTemporaryServerFailureAsTransient(t *testing.T) {
 	if !errors.Is(err, ErrUnexpectedStatus) || !netretry.IsTransient(err) {
 		t.Fatalf("ListAll() error = %v, want transient ErrUnexpectedStatus", err)
 	}
+	if !strings.Contains(err.Error(), "qBittorrent GET /api/v2/torrents/info") || !strings.Contains(err.Error(), "503") {
+		t.Fatalf("error lacks endpoint or HTTP status: %v", err)
+	}
 }
 
 func TestClientRejectsInvalidListResponse(t *testing.T) {
@@ -419,6 +422,52 @@ func TestClientRejectsInvalidListResponse(t *testing.T) {
 	_, err := client.ListByTag(context.Background(), "sc")
 	if !errors.Is(err, ErrInvalidResponse) {
 		t.Fatalf("error = %v, want ErrInvalidResponse", err)
+	}
+	if !strings.Contains(err.Error(), "item_index=0 invalid field=hash") {
+		t.Fatalf("error lacks invalid record context: %v", err)
+	}
+}
+
+func TestRequestErrorsRedactRedirectCredentials(t *testing.T) {
+	t.Parallel()
+	for _, operation := range []string{"login", "list"} {
+		t.Run(operation, func(t *testing.T) {
+			httpClient := &http.Client{Transport: qbitRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+				if request.URL.Host == "qbit.test" {
+					return &http.Response{
+						StatusCode: http.StatusFound,
+						Header:     http.Header{"Location": {"https://private.test/download.php?passkey=private-passkey&auth_token=private-token#private-fragment"}},
+						Body:       io.NopCloser(strings.NewReader("")),
+						Request:    request,
+					}, nil
+				}
+				return nil, context.DeadlineExceeded
+			})}
+			authenticator, err := NewAuthenticator("https://qbit.test", httpClient)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if operation == "login" {
+				_, err = authenticator.Login(context.Background(), "fixture-user", "private-password")
+			} else {
+				client, createErr := authenticator.NewClient(Credential{CookieName: "SID", SID: "private-sid"})
+				if createErr != nil {
+					t.Fatal(createErr)
+				}
+				_, err = client.ListAll(context.Background())
+			}
+			if !errors.Is(err, context.DeadlineExceeded) || !netretry.IsTransient(err) {
+				t.Fatalf("transport cause lost: %v", err)
+			}
+			for _, secret := range []string{"private-passkey", "private-token", "private-fragment", "private-password", "private-sid"} {
+				if strings.Contains(err.Error(), secret) {
+					t.Errorf("error exposes %s: %v", secret, err)
+				}
+			}
+			if !strings.Contains(err.Error(), "private.test/download.php") {
+				t.Fatalf("error lost safe destination context: %v", err)
+			}
+		})
 	}
 }
 

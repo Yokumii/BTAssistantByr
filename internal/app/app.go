@@ -44,6 +44,7 @@ func AssembleWithLogger(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	started := time.Now()
 	rootLogger := usableLogger(logger)
 	logger = rootLogger.With("component", "app")
 	retryPolicy := netretry.Policy{
@@ -102,7 +103,7 @@ func AssembleWithLogger(
 			return nil, fmt.Errorf("cache BYR session after login: %w", err)
 		}
 	}
-	logger.InfoContext(ctx, "BYR session ready", "credential_source", byrCredentialSource, "duration", time.Since(byrStarted))
+	logger.InfoContext(ctx, "BYR session credentials ready", "credential_source", byrCredentialSource, "duration", time.Since(byrStarted))
 	byrSessionLogger := rootLogger.With("component", "byr_session")
 	byrCredentialRefresher := &byrCredentialRefresher{
 		authenticator: byrAuthenticator,
@@ -179,7 +180,7 @@ func AssembleWithLogger(
 		return nil, fmt.Errorf("create TopFree poller: %w", err)
 	}
 	poller.SetLogger(rootLogger.With("component", "topfree_poller"))
-	logger.DebugContext(ctx, "application assembly completed")
+	logger.DebugContext(ctx, "application assembly completed", "duration", time.Since(started))
 
 	return &Application{poller: poller, handler: coordinator.Handle, logger: logger}, nil
 }
@@ -189,13 +190,13 @@ func (application *Application) Run(ctx context.Context) error {
 	application.logger.InfoContext(ctx, "BTAssistantByr started; press Ctrl+C to stop")
 	err := application.poller.Run(ctx, application.handler)
 	if errors.Is(err, context.Canceled) && ctx.Err() != nil {
-		application.logger.Info("BTAssistantByr stopped")
+		application.logger.Info("BTAssistantByr stopped", "reason", "context_canceled")
 		return nil
 	}
 	if errors.Is(err, topfree.ErrExecutionDeclined) {
-		application.logger.WarnContext(ctx, "BTAssistantByr stopped because writes were not approved")
+		application.logger.WarnContext(ctx, "BTAssistantByr stopped because writes were not approved", "reason", "approval_declined")
 	} else if err != nil {
-		application.logger.ErrorContext(ctx, "BTAssistantByr stopped with an error", "error", err)
+		application.logger.ErrorContext(ctx, "BTAssistantByr stopped with an error", "stage", "polling", "error", err)
 	}
 	return err
 }
@@ -244,7 +245,7 @@ type byrCredentialRefresher struct {
 
 func (refresher *byrCredentialRefresher) Refresh(ctx context.Context) (byr.Credential, error) {
 	if refresher.source == byrCredentialSourceCache && refresher.configuration.Cookie != "" {
-		refresher.logger.WarnContext(ctx, "cached BYR session expired; trying configured auth token")
+		refresher.logger.WarnContext(ctx, "cached BYR session expired; trying configured auth token", "credential_source", refresher.source, "next_credential_source", byrCredentialSourceConfig)
 		credential, err := byr.NewCredential(refresher.configuration.Cookie)
 		if err != nil {
 			return byr.Credential{}, fmt.Errorf("use configured BYR auth token: %w", err)
@@ -254,7 +255,7 @@ func (refresher *byrCredentialRefresher) Refresh(ctx context.Context) (byr.Crede
 	}
 
 	started := time.Now()
-	refresher.logger.WarnContext(ctx, "BYR session expired; reauthenticating")
+	refresher.logger.WarnContext(ctx, "BYR session expired; reauthenticating", "credential_source", refresher.source, "next_credential_source", byrCredentialSourceLogin)
 	credential, err := refresher.authenticator.Login(
 		ctx,
 		refresher.configuration.Username,
@@ -267,7 +268,7 @@ func (refresher *byrCredentialRefresher) Refresh(ctx context.Context) (byr.Crede
 		return byr.Credential{}, fmt.Errorf("cache renewed BYR session: %w", err)
 	}
 	refresher.source = byrCredentialSourceLogin
-	refresher.logger.InfoContext(ctx, "BYR session renewed", "duration", time.Since(started))
+	refresher.logger.InfoContext(ctx, "BYR session renewed", "credential_source", refresher.source, "duration", time.Since(started))
 	return credential, nil
 }
 

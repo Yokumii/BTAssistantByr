@@ -144,13 +144,13 @@ func (c *Client) webAPIVersion(ctx context.Context) (apiVersion, error) {
 	}
 	parts := strings.Split(value, ".")
 	if len(parts) != 3 {
-		return apiVersion{}, ErrInvalidResponse
+		return apiVersion{}, fmt.Errorf("%w: Web API version must contain three nonnegative integers", ErrInvalidResponse)
 	}
 	numbers := make([]int, 3)
 	for index, part := range parts {
 		numbers[index], err = strconv.Atoi(part)
 		if err != nil || numbers[index] < 0 {
-			return apiVersion{}, ErrInvalidResponse
+			return apiVersion{}, fmt.Errorf("%w: Web API version component_index=%d is not a nonnegative integer", ErrInvalidResponse, index)
 		}
 	}
 	return apiVersion{major: numbers[0], minor: numbers[1], patch: numbers[2]}, nil
@@ -162,7 +162,7 @@ func (c *Client) defaultSavePath(ctx context.Context) (string, error) {
 		return "", err
 	}
 	if value == "" {
-		return "", ErrInvalidResponse
+		return "", fmt.Errorf("%w: default save path is empty", ErrInvalidResponse)
 	}
 	return value, nil
 }
@@ -189,13 +189,13 @@ func (c *Client) defaultFreeSpace(ctx context.Context) (int64, error) {
 	}
 	decoder := json.NewDecoder(io.LimitReader(response.Body, maxTorrentListSize))
 	if err := decoder.Decode(&payload); err != nil {
-		return 0, fmt.Errorf("%w: %w", ErrInvalidResponse, err)
+		return 0, fmt.Errorf("%w: decode /api/v2/sync/maindata: %w", ErrInvalidResponse, err)
 	}
 	if err := ensureJSONEnd(decoder); err != nil {
-		return 0, err
+		return 0, fmt.Errorf("decode /api/v2/sync/maindata: %w", err)
 	}
 	if payload.ServerState.FreeSpaceOnDisk == nil || *payload.ServerState.FreeSpaceOnDisk < 0 {
-		return 0, ErrInvalidResponse
+		return 0, fmt.Errorf("%w: server_state.free_space_on_disk missing or negative", ErrInvalidResponse)
 	}
 	return *payload.ServerState.FreeSpaceOnDisk, nil
 }
@@ -208,10 +208,10 @@ func (c *Client) getText(ctx context.Context, path string, query url.Values) (st
 	defer response.Body.Close()
 	contents, err := io.ReadAll(io.LimitReader(response.Body, maxTextResponseSize+1))
 	if err != nil {
-		return "", fmt.Errorf("%w: %w", ErrInvalidResponse, err)
+		return "", fmt.Errorf("%w: read /%s response: %w", ErrInvalidResponse, path, err)
 	}
 	if len(contents) > maxTextResponseSize {
-		return "", ErrInvalidResponse
+		return "", fmt.Errorf("%w: /%s response exceeds %d bytes", ErrInvalidResponse, path, maxTextResponseSize)
 	}
 	return strings.TrimSpace(string(contents)), nil
 }
@@ -219,7 +219,7 @@ func (c *Client) getText(ctx context.Context, path string, query url.Values) (st
 func parseFreeBytes(value string) (int64, error) {
 	freeBytes, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
 	if err != nil || freeBytes < 0 {
-		return 0, ErrInvalidResponse
+		return 0, fmt.Errorf("%w: free-space response must be a nonnegative integer", ErrInvalidResponse)
 	}
 	return freeBytes, nil
 }
@@ -269,16 +269,33 @@ func (c *Client) list(ctx context.Context, query url.Values) ([]domain.ManagedTo
 	}
 	decoder := json.NewDecoder(io.LimitReader(response.Body, maxTorrentListSize))
 	if err := decoder.Decode(&payload); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrInvalidResponse, err)
+		return nil, fmt.Errorf("%w: decode /api/v2/torrents/info: %w", ErrInvalidResponse, err)
 	}
 	if err := ensureJSONEnd(decoder); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decode /api/v2/torrents/info: %w", err)
 	}
 
 	torrents := make([]domain.ManagedTorrent, 0, len(payload))
-	for _, item := range payload {
-		if !torrentHashPattern.MatchString(item.Hash) || strings.TrimSpace(item.Name) == "" || item.Size < 0 || item.Completed < 0 || item.Completed > item.Size || item.AmountLeft < 0 || strings.TrimSpace(item.State) == "" || item.AddedOn < 0 {
-			return nil, ErrInvalidResponse
+	for index, item := range payload {
+		invalidField := ""
+		switch {
+		case !torrentHashPattern.MatchString(item.Hash):
+			invalidField = "hash"
+		case strings.TrimSpace(item.Name) == "":
+			invalidField = "name"
+		case item.Size < 0:
+			invalidField = "size"
+		case item.Completed < 0 || item.Completed > item.Size:
+			invalidField = "completed"
+		case item.AmountLeft < 0:
+			invalidField = "amount_left"
+		case strings.TrimSpace(item.State) == "":
+			invalidField = "state"
+		case item.AddedOn < 0:
+			invalidField = "added_on"
+		}
+		if invalidField != "" {
+			return nil, fmt.Errorf("%w: /api/v2/torrents/info item_index=%d invalid field=%s", ErrInvalidResponse, index, invalidField)
 		}
 		torrents = append(torrents, domain.ManagedTorrent{
 			Hash:            domain.TorrentHash(strings.ToLower(item.Hash)),
@@ -419,7 +436,12 @@ func (c *Client) request(
 	query url.Values,
 	contentType string,
 	body io.Reader,
-) (*http.Response, error) {
+) (_ *http.Response, resultErr error) {
+	defer func() {
+		if resultErr != nil {
+			resultErr = fmt.Errorf("qBittorrent %s /%s: %w", method, path, resultErr)
+		}
+	}()
 	endpoint := *c.baseURL
 	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/" + path
 	endpoint.RawPath = ""
@@ -438,7 +460,7 @@ func (c *Client) request(
 
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("send qBittorrent request: %w", err)
+		return nil, netretry.RequestError("send qBittorrent request", err)
 	}
 	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
 		response.Body.Close()

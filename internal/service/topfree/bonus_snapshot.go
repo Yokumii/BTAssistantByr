@@ -48,11 +48,17 @@ func (c *Coordinator) loadBonusSnapshot(ctx context.Context, candidates []domain
 			}
 		}
 		if complete {
+			if c.logger != nil {
+				c.logger.DebugContext(ctx, "using cached TopFree bonus snapshot", "observed_at", cached.ObservedAt, "valid_until", cached.ObservedAt.Add(c.bonusInterval), "seeding_torrents", cached.SeedCount, "torrent_metadata", len(cached.Torrents))
+			}
 			return *cached, nil
 		}
 	}
 	// A failed refresh must not leave the previous snapshot usable for writes.
 	c.bonusSnapshot = nil
+	if c.logger != nil {
+		c.logger.DebugContext(ctx, "refreshing TopFree bonus snapshot", "candidates", len(candidates))
+	}
 	account, err := c.bonusSource.BonusAccount(ctx)
 	if err != nil {
 		return BonusSnapshot{}, fmt.Errorf("read bonus account: %w", err)
@@ -107,5 +113,8 @@ func (c *Coordinator) loadBonusSnapshot(ctx context.Context, candidates []domain
 		return BonusSnapshot{}, err
 	}
 	c.bonusSnapshot = &snapshot
+	if c.logger != nil {
+		c.logger.DebugContext(ctx, "TopFree bonus snapshot refreshed", "observed_at", snapshot.ObservedAt, "valid_until", snapshot.ObservedAt.Add(c.bonusInterval), "seeding_torrents", snapshot.SeedCount, "torrent_metadata", len(snapshot.Torrents))
+	}
 	return snapshot, nil
 }

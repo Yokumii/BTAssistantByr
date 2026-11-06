@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/Yokumii/BTAssistantByr/internal/netretry"
@@ -232,6 +233,9 @@ func TestAuthenticatorLoginRejectsUnexpectedStatus(t *testing.T) {
 	}
 	if !netretry.IsTransient(err) {
 		t.Fatalf("503 error was not marked transient: %v", err)
+	}
+	if !strings.Contains(err.Error(), "BYR POST /api/v2/login.php") || !strings.Contains(err.Error(), "503") {
+		t.Fatalf("error lacks endpoint or HTTP status: %v", err)
 	}
 }
 

@@ -106,6 +106,27 @@ func TestAssembleUntilReachableReturnsBusinessErrorImmediately(t *testing.T) {
 	}
 }
 
+func TestAssembleUntilReachableLogsAttemptsAndRecovery(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	attempts := 0
+	_, err := assembleUntilReachable(context.Background(), 0, logger, func() (int, error) {
+		attempts++
+		if attempts == 1 {
+			return 0, netretry.Transient(errors.New("unavailable"))
+		}
+		return 42, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"application initialization started", "attempt=1", "next_attempt_in=0s", "application initialization recovered", "attempt=2"} {
+		if !strings.Contains(logs.String(), expected) {
+			t.Errorf("missing %q in %s", expected, logs.String())
+		}
+	}
+}
+
 func TestAssembleUntilReachableStopsWhileWaiting(t *testing.T) {
 	t.Parallel()
 

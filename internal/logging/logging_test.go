@@ -3,6 +3,8 @@ package logging
 import (
 	"bytes"
 	"errors"
+	"io"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -53,6 +55,124 @@ func TestSystemFiltersColorsAndPersistsLogs(t *testing.T) {
 		if !strings.Contains(fileText, expected) {
 			t.Errorf("file log does not contain %q:\n%s", expected, fileText)
 		}
+	}
+}
+
+type countingLogValue struct {
+	calls int
+}
+
+type attrsOwnershipHandler struct {
+	slog.Handler
+	attrs  []slog.Attr
+	mutate bool
+}
+
+func (handler *attrsOwnershipHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	handler.attrs = attrs
+	if handler.mutate {
+		attrs[0] = slog.String("field", "modified by first child")
+	}
+	return handler
+}
+
+func TestFanoutGivesEachChildOwnershipOfAttributes(t *testing.T) {
+	first := &attrsOwnershipHandler{mutate: true}
+	second := &attrsOwnershipHandler{}
+	original := slog.String("field", "original")
+	attrs := []slog.Attr{original}
+	fanoutHandler{first, second}.WithAttrs(attrs)
+	if !second.attrs[0].Equal(original) {
+		t.Fatalf("first child modified second child's attributes: %v", second.attrs)
+	}
+	if !attrs[0].Equal(original) {
+		t.Fatalf("first child modified caller's attributes: %v", attrs)
+	}
+	first.attrs[0] = slog.String("field", "modified after WithAttrs")
+	if !second.attrs[0].Equal(original) {
+		t.Fatalf("children retained the same attribute slice: %v", second.attrs)
+	}
+}
+
+func (value *countingLogValue) LogValue() slog.Value {
+	value.calls++
+	return slog.IntValue(value.calls)
+}
+
+func TestSystemResolvesLogValuesOnceForBothOutputs(t *testing.T) {
+	var console bytes.Buffer
+	system, err := New(Options{Level: "info", Color: ColorNever, LogDir: t.TempDir(), Console: &console})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := &countingLogValue{}
+	logger := system.Logger().With(slog.Group("bound", slog.Any("value", value)))
+	logger.Info("first", slog.Group("record", slog.Group("nested", slog.Any("value", value))))
+	logger.Info("second", "value", value)
+	if err := system.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if value.calls != 3 {
+		t.Fatalf("LogValue called %d times, want once per bound/record value (3)", value.calls)
+	}
+	contents, err := os.ReadFile(system.FilePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, output := range map[string]string{"console": console.String(), "file": string(contents)} {
+		for _, want := range []string{"bound.value=1", "record.nested.value=2", "second", " value=3"} {
+			if !strings.Contains(output, want) {
+				t.Errorf("%s output missing %q: %s", name, want, output)
+			}
+		}
+	}
+}
+
+func TestSystemReportsOutputFailureOnCloseAndContinuesOtherOutput(t *testing.T) {
+	writeErr := errors.New("console unavailable")
+	system, err := New(Options{Level: "info", Color: ColorNever, LogDir: t.TempDir(), Console: consoleTestWriter{err: writeErr}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	system.Logger().With("component", "test").WithGroup("operation").Info("still persisted", "id", 7)
+	if err := system.Close(); !errors.Is(err, writeErr) || !strings.Contains(err.Error(), "write console log") {
+		t.Fatalf("Close() error = %v, want console write failure", err)
+	}
+	contents, err := os.ReadFile(system.FilePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(contents), `msg="still persisted"`) || !strings.Contains(string(contents), "operation.id=7") {
+		t.Fatalf("file output was skipped after console failure: %s", contents)
+	}
+}
+
+func TestSystemReportsShortWriteOnClose(t *testing.T) {
+	system, err := New(Options{Level: "info", Color: ColorNever, LogDir: t.TempDir(), Console: consoleTestWriter{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	system.Logger().Info("message")
+	if err := system.Close(); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("Close() error = %v, want short write", err)
+	}
+}
+
+func TestSystemReportsFileWriteFailureOnClose(t *testing.T) {
+	var console bytes.Buffer
+	system, err := New(Options{Level: "info", Color: ColorNever, LogDir: t.TempDir(), Console: &console})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := system.file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	system.Logger().Info("console still available")
+	if err := system.Close(); !errors.Is(err, os.ErrClosed) || !strings.Contains(err.Error(), "write file log") {
+		t.Fatalf("Close() error = %v, want recorded file write failure", err)
+	}
+	if !strings.Contains(console.String(), "console still available") {
+		t.Fatalf("console output was skipped: %s", console.String())
 	}
 }
 

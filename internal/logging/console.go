@@ -142,7 +142,8 @@ func isCapacityKey(key string) bool {
 	switch key {
 	case "free_bytes", "reserve_bytes", "required_bytes", "max_torrent_size_bytes",
 		"current_disk_bytes", "projected_disk_bytes", "initial_free_bytes",
-		"projected_free_bytes", "projected_free_after_cleanup_bytes":
+		"projected_free_bytes", "projected_free_after_cleanup_bytes", "size_bytes",
+		"completed_bytes", "amount_left_bytes", "available_bytes":
 		return true
 	default:
 		return false
@@ -154,7 +155,7 @@ func consoleText(value string, quoteSpaces bool) string {
 		return strconv.Quote(value)
 	}
 	for _, char := range value {
-		if unicode.IsControl(char) || (quoteSpaces && (unicode.IsSpace(char) || char == '=' || char == '"')) {
+		if !strconv.IsPrint(char) || (quoteSpaces && (unicode.IsSpace(char) || char == '=' || char == '"')) {
 			return strconv.Quote(value)
 		}
 	}

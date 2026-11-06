@@ -94,7 +94,12 @@ func NewAuthenticatorWithProxy(baseURL, proxyURL string, httpClient *http.Client
 }
 
 // Login obtains BYR API and cookie credentials.
-func (a *Authenticator) Login(ctx context.Context, username, password string) (Credential, error) {
+func (a *Authenticator) Login(ctx context.Context, username, password string) (_ Credential, resultErr error) {
+	defer func() {
+		if resultErr != nil {
+			resultErr = fmt.Errorf("BYR POST /api/v2/login.php: %w", resultErr)
+		}
+	}()
 	if strings.TrimSpace(username) == "" {
 		return Credential{}, ErrUsernameRequired
 	}
@@ -131,7 +136,7 @@ func (a *Authenticator) Login(ctx context.Context, username, password string) (C
 
 	response, err := a.httpClient.Do(request)
 	if err != nil {
-		return Credential{}, fmt.Errorf("send BYR login request: %w", err)
+		return Credential{}, netretry.RequestError("send BYR login request", err)
 	}
 	defer response.Body.Close()
 
@@ -153,8 +158,11 @@ func (a *Authenticator) Login(ctx context.Context, username, password string) (C
 	if err := json.NewDecoder(io.LimitReader(response.Body, maxResponseSize)).Decode(&result); err != nil {
 		return Credential{}, fmt.Errorf("%w: %w", ErrInvalidResponse, err)
 	}
-	if !result.Success || result.Code != http.StatusOK || strings.TrimSpace(result.Data.AuthToken) == "" {
-		return Credential{}, ErrAuthenticationFailed
+	if !result.Success || result.Code != http.StatusOK {
+		return Credential{}, fmt.Errorf("%w: API success=%t code=%d", ErrAuthenticationFailed, result.Success, result.Code)
+	}
+	if strings.TrimSpace(result.Data.AuthToken) == "" {
+		return Credential{}, fmt.Errorf("%w: API auth token missing", ErrAuthenticationFailed)
 	}
 
 	credential := Credential{AccessToken: strings.TrimSpace(result.Data.AuthToken)}
@@ -167,7 +175,7 @@ func (a *Authenticator) Login(ctx context.Context, username, password string) (C
 		}
 	}
 	if credential.AuthToken == "" || credential.SessionID == "" {
-		return Credential{}, ErrAuthenticationFailed
+		return Credential{}, fmt.Errorf("%w: required session cookies missing", ErrAuthenticationFailed)
 	}
 
 	return credential, nil

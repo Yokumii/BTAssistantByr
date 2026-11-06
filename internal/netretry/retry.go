@@ -59,18 +59,39 @@ func (p Policy) Do(ctx context.Context, operation string, run func() error) erro
 // DoValue is Do for operations returning a value.
 func DoValue[T any](ctx context.Context, policy Policy, operation string, run func() (T, error)) (T, error) {
 	var zero T
+	started := time.Now()
+	if policy.Logger != nil {
+		policy.Logger.DebugContext(ctx, "network operation started", "operation", operation, "max_attempts", policy.Retries+1)
+	}
 	for attempt := 1; ; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return zero, err
 		}
 		value, err := run()
 		if err == nil {
+			if policy.Logger != nil {
+				level := slog.LevelDebug
+				if attempt > 1 {
+					level = slog.LevelInfo
+				}
+				policy.Logger.Log(ctx, level, "network operation completed",
+					"operation", operation, "attempt", attempt, "max_attempts", policy.Retries+1, "duration", time.Since(started))
+			}
 			return value, nil
 		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return zero, ctxErr
 		}
 		if !IsTransient(err) || attempt > policy.Retries {
+			if policy.Logger != nil {
+				level, message := slog.LevelDebug, "network operation failed without retry"
+				if IsTransient(err) {
+					level, message = slog.LevelWarn, "network operation retries exhausted"
+				}
+				policy.Logger.Log(ctx, level, message,
+					"operation", operation, "attempt", attempt, "max_attempts", policy.Retries+1,
+					"duration", time.Since(started), "error", err)
+			}
 			return zero, err
 		}
 		if policy.Logger != nil {
@@ -93,4 +114,11 @@ func DoValue[T any](ctx context.Context, policy Policy, operation string, run fu
 		case <-timer.C:
 		}
 	}
+}
+
+func (p Policy) withLogAttrs(attrs ...any) Policy {
+	if p.Logger != nil {
+		p.Logger = p.Logger.With(attrs...)
+	}
+	return p
 }

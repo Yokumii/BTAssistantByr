@@ -79,21 +79,24 @@ func run(
 		}
 	}()
 	logger := logSystem.Logger()
-	logger.InfoContext(ctx, "initializing BTAssistantByr",
+	lifecycleLogger := logger.With("component", "main")
+	lifecycleLogger.InfoContext(ctx, "initializing BTAssistantByr",
 		"version", version,
+		"config_path", *configPath,
 		"execution_mode", configuration.Execution.Mode,
+		"strategy_priority", configuration.Strategy.Priority,
 		"log_level", configuration.Runtime.LogLevel,
 		"log_file", logSystem.FilePath(),
 	)
-	application, err := assembleUntilReachable(ctx, configuration.Strategy.RefreshInterval, logger, func() (*app.Application, error) {
+	application, err := assembleUntilReachable(ctx, configuration.Strategy.RefreshInterval, lifecycleLogger, func() (*app.Application, error) {
 		return app.AssembleWithLogger(ctx, configuration, input, output, logger)
 	})
 	if err != nil {
 		if errors.Is(err, context.Canceled) && ctx.Err() != nil {
-			logger.Info("BTAssistantByr stopped before initialization completed")
+			lifecycleLogger.Info("BTAssistantByr stopped before initialization completed", "reason", "context_canceled")
 			return nil
 		}
-		logger.ErrorContext(ctx, "application assembly failed", "error", err)
+		lifecycleLogger.ErrorContext(ctx, "application assembly failed", "stage", "initialization", "error", err)
 		return fmt.Errorf("assemble application: %w", err)
 	}
 	if err := application.Run(ctx); err != nil {
@@ -109,9 +112,14 @@ func assembleUntilReachable[T any](
 	assemble func() (T, error),
 ) (T, error) {
 	var zero T
-	for {
+	for attempt := 1; ; attempt++ {
+		started := time.Now()
+		logger.DebugContext(ctx, "application initialization started", "attempt", attempt)
 		result, err := assemble()
 		if err == nil {
+			if attempt > 1 {
+				logger.InfoContext(ctx, "application initialization recovered", "attempt", attempt, "duration", time.Since(started))
+			}
 			return result, nil
 		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -121,6 +129,8 @@ func assembleUntilReachable[T any](
 			return zero, err
 		}
 		logger.WarnContext(ctx, "application initialization skipped after network retries",
+			"attempt", attempt,
+			"duration", time.Since(started),
 			"next_attempt_in", retryInterval,
 			"error", err,
 		)

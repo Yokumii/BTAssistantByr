@@ -59,15 +59,25 @@ func TestConsoleResolvesBoundValuesOnceAndEscapesControls(t *testing.T) {
 	value := &consoleTestValue{value: "before"}
 	logger := slog.New(newConsoleHandler(&output, slog.LevelInfo, false)).With("value", value)
 	value.value = "after"
-	logger.Info("line\nbreak\x1b[31m", "path", "/downloads/my files", "error", errors.New("failed\nagain"))
+	logger.Info("line\nbreak\x1b[31m", "path", "/downloads/my files", "error", errors.New("failed\nagain"), "separator", "a\u2028b\u202ec")
 	text := output.String()
-	if strings.Count(text, "\n") != 1 || strings.Contains(text, "\x1b") {
+	if strings.Count(text, "\n") != 1 || strings.ContainsAny(text, "\x1b\u2028\u202e") {
 		t.Fatalf("record contains unescaped controls: %q", text)
 	}
-	for _, want := range []string{`"line\nbreak\x1b[31m"`, "value=before", `path="/downloads/my files"`, `error="failed\nagain"`} {
+	for _, want := range []string{`"line\nbreak\x1b[31m"`, "value=before", `path="/downloads/my files"`, `error="failed\nagain"`, `separator="a\u2028b\u202ec"`} {
 		if !strings.Contains(text, want) {
 			t.Errorf("console = %q, missing %q", text, want)
 		}
+	}
+}
+
+func TestConsoleCandidateCapacityFields(t *testing.T) {
+	var output bytes.Buffer
+	logger := slog.New(newConsoleHandler(&output, slog.LevelInfo, false))
+	logger.Info("candidate", "size_bytes", int64(2<<30), "completed_bytes", int64(1<<30), "amount_left_bytes", int64(1<<30), "available_bytes", int64(3<<30))
+	want := "size=2.00GiB completed=1.00GiB amount_left=1.00GiB available=3.00GiB"
+	if !strings.Contains(output.String(), want) {
+		t.Fatalf("console = %q, missing readable candidate capacities %q", output.String(), want)
 	}
 }
 

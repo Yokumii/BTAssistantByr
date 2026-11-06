@@ -220,7 +220,12 @@ func (c *Client) get(ctx context.Context, relativePath string, query url.Values)
 	}
 }
 
-func (c *Client) getWithCredential(ctx context.Context, relativePath string, query url.Values, credential Credential) (*http.Response, error) {
+func (c *Client) getWithCredential(ctx context.Context, relativePath string, query url.Values, credential Credential) (_ *http.Response, resultErr error) {
+	defer func() {
+		if resultErr != nil {
+			resultErr = fmt.Errorf("BYR GET /%s: %w", relativePath, resultErr)
+		}
+	}()
 	endpoint := *c.baseURL
 	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/" + relativePath
 	endpoint.RawPath = ""
@@ -239,7 +244,7 @@ func (c *Client) getWithCredential(ctx context.Context, relativePath string, que
 
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("send BYR request: %w", err)
+		return nil, netretry.RequestError("send BYR request", err)
 	}
 	if response.StatusCode >= http.StatusMultipleChoices && response.StatusCode < http.StatusBadRequest {
 		response.Body.Close()

@@ -96,7 +96,7 @@ func TestAssembleLogsIntoBYRWhenCookieIsEmpty(t *testing.T) {
 	if got := fixture.byrLogins.Load(); got != 1 {
 		t.Errorf("BYR login requests = %d, want 1", got)
 	}
-	for _, expected := range []string{"assembling application", "BYR session ready", "qBittorrent session ready", "application assembly completed"} {
+	for _, expected := range []string{"assembling application", "BYR session credentials ready", "qBittorrent session ready", "application assembly completed"} {
 		if !strings.Contains(logs.String(), expected) {
 			t.Errorf("assembly logs do not contain %q:\n%s", expected, logs.String())
 		}

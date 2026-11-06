@@ -9,7 +9,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 )
 
 const FileName = "btassistantbyr.log"
@@ -40,6 +42,7 @@ type System struct {
 	logger   *slog.Logger
 	file     *os.File
 	filePath string
+	writes   *writeFailure
 }
 
 // New creates a level-filtered console logger and an ANSI-free file logger.
@@ -73,12 +76,14 @@ func New(options Options) (*System, error) {
 		AddSource: level == slog.LevelDebug,
 		Level:     level,
 	}
-	consoleHandler := newConsoleHandler(options.Console, level, color)
-	fileHandler := slog.NewTextHandler(file, handlerOptions)
+	writes := &writeFailure{}
+	consoleHandler := newConsoleHandler(logWriter{writer: options.Console, name: "console", failure: writes}, level, color)
+	fileHandler := slog.NewTextHandler(logWriter{writer: file, name: "file", failure: writes}, handlerOptions)
 	return &System{
 		logger:   slog.New(fanoutHandler{consoleHandler, fileHandler}),
 		file:     file,
 		filePath: filePath,
+		writes:   writes,
 	}, nil
 }
 
@@ -92,15 +97,49 @@ func (system *System) FilePath() string {
 	return system.filePath
 }
 
-// Close flushes and closes the persistent log file.
+// Close reports the first output failure as well as flush and close errors.
 func (system *System) Close() error {
 	if system.file == nil {
-		return nil
+		return system.writes.err()
 	}
 	syncErr := system.file.Sync()
 	closeErr := system.file.Close()
 	system.file = nil
-	return errors.Join(syncErr, closeErr)
+	return errors.Join(system.writes.err(), syncErr, closeErr)
+}
+
+// slog discards Handler errors, so keep the first write failure for Close.
+type writeFailure struct {
+	mu    sync.Mutex
+	first error
+}
+
+func (failure *writeFailure) err() error {
+	failure.mu.Lock()
+	defer failure.mu.Unlock()
+	return failure.first
+}
+
+type logWriter struct {
+	writer  io.Writer
+	name    string
+	failure *writeFailure
+}
+
+func (writer logWriter) Write(payload []byte) (int, error) {
+	written, err := writer.writer.Write(payload)
+	if err == nil && written != len(payload) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		err = fmt.Errorf("write %s log: %w", writer.name, err)
+		writer.failure.mu.Lock()
+		if writer.failure.first == nil {
+			writer.failure.first = err
+		}
+		writer.failure.mu.Unlock()
+	}
+	return written, err
 }
 
 func parseLevel(value string) (slog.Level, error) {
@@ -148,21 +187,45 @@ func (handler fanoutHandler) Enabled(ctx context.Context, level slog.Level) bool
 }
 
 func (handler fanoutHandler) Handle(ctx context.Context, record slog.Record) error {
+	resolved := slog.NewRecord(record.Time, record.Level, record.Message, record.PC)
+	record.Attrs(func(attr slog.Attr) bool {
+		resolved.AddAttrs(resolveAttr(attr))
+		return true
+	})
 	var result error
 	for _, child := range handler {
 		if child.Enabled(ctx, record.Level) {
-			result = errors.Join(result, child.Handle(ctx, record.Clone()))
+			result = errors.Join(result, child.Handle(ctx, resolved.Clone()))
 		}
 	}
 	return result
 }
 
 func (handler fanoutHandler) WithAttrs(attributes []slog.Attr) slog.Handler {
+	resolved := make([]slog.Attr, len(attributes))
+	for index, attr := range attributes {
+		resolved[index] = resolveAttr(attr)
+	}
 	children := make(fanoutHandler, len(handler))
 	for index, child := range handler {
-		children[index] = child.WithAttrs(attributes)
+		// Each child owns its attribute slice and may retain or modify it.
+		children[index] = child.WithAttrs(slices.Clone(resolved))
 	}
 	return children
+}
+
+// Resolve once before fan-out, including group members, so both outputs agree.
+func resolveAttr(attr slog.Attr) slog.Attr {
+	attr.Value = attr.Value.Resolve()
+	if attr.Value.Kind() == slog.KindGroup {
+		members := attr.Value.Group()
+		resolved := make([]slog.Attr, len(members))
+		for index, member := range members {
+			resolved[index] = resolveAttr(member)
+		}
+		attr.Value = slog.GroupValue(resolved...)
+	}
+	return attr
 }
 
 func (handler fanoutHandler) WithGroup(name string) slog.Handler {

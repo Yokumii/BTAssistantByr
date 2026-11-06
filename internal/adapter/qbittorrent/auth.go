@@ -77,7 +77,12 @@ func NewAuthenticator(baseURL string, httpClient *http.Client) (*Authenticator, 
 }
 
 // Login obtains a SID cookie from qBittorrent Web API v2.
-func (a *Authenticator) Login(ctx context.Context, username, password string) (Credential, error) {
+func (a *Authenticator) Login(ctx context.Context, username, password string) (_ Credential, resultErr error) {
+	defer func() {
+		if resultErr != nil {
+			resultErr = fmt.Errorf("qBittorrent POST /api/v2/auth/login: %w", resultErr)
+		}
+	}()
 	if strings.TrimSpace(username) == "" {
 		return Credential{}, ErrUsernameRequired
 	}
@@ -103,7 +108,7 @@ func (a *Authenticator) Login(ctx context.Context, username, password string) (C
 
 	response, err := a.httpClient.Do(request)
 	if err != nil {
-		return Credential{}, fmt.Errorf("send qBittorrent login request: %w", err)
+		return Credential{}, netretry.RequestError("send qBittorrent login request", err)
 	}
 	defer response.Body.Close()
 
@@ -121,7 +126,7 @@ func (a *Authenticator) Login(ctx context.Context, username, password string) (C
 		}
 	}
 
-	return Credential{}, ErrAuthenticationFailed
+	return Credential{}, fmt.Errorf("%w: session cookie missing", ErrAuthenticationFailed)
 }
 
 func (a *Authenticator) origin() string {

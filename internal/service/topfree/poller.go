@@ -111,6 +111,7 @@ func (p *Poller) Run(ctx context.Context, handler Handler) error {
 					}
 					p.logger.WarnContext(ctx, message,
 						"round", refreshRound,
+						"snapshot_valid", false,
 						"next_refresh_in", p.refreshInterval,
 						"error", err,
 					)
@@ -176,7 +177,7 @@ func (p *Poller) handle(ctx context.Context, handler Handler, snapshot []domain.
 	}
 	if errors.Is(err, port.ErrInvalidTrackerSnapshot) {
 		if p.logger != nil {
-			p.logger.WarnContext(ctx, "TopFree queue cycle skipped because tracker metadata is invalid", "error", err, "next_queue_check_in", p.queueCheckInterval)
+			p.logger.WarnContext(ctx, "TopFree queue cycle skipped because tracker metadata is invalid", "trigger", trigger, "round", round, "error", err, "next_queue_check_in", p.queueCheckInterval)
 		}
 		return nil
 	}

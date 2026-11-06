@@ -127,7 +127,12 @@ func (c *Coordinator) RunOnce(ctx context.Context, candidates []domain.Candidate
 				"excluded", len(oversizedCandidates),
 				"max_torrent_size_bytes", c.maxTorrentSizeBytes,
 			)
-			c.logger.DebugContext(ctx, "oversized TopFree torrent details", "candidates", oversizedCandidates)
+			if c.logger.Enabled(ctx, slog.LevelDebug) {
+				for _, candidate := range oversizedCandidates {
+					attrs := append(candidateLogAttrs(candidate), slog.Int64("max_torrent_size_bytes", c.maxTorrentSizeBytes))
+					c.logger.LogAttrs(ctx, slog.LevelDebug, "TopFree candidate exceeds size limit", attrs...)
+				}
+			}
 		}
 		c.logger.DebugContext(ctx, "qBittorrent management scope applied",
 			"in_scope", len(manageable),
@@ -140,6 +145,21 @@ func (c *Coordinator) RunOnce(ctx context.Context, candidates []domain.Candidate
 	}
 	if c.logger != nil && len(queue.removed) > 0 {
 		c.logger.InfoContext(ctx, "removed torrents no longer TopFree from download queue", "hashes", queue.removed)
+	}
+	if c.logger != nil {
+		c.logger.DebugContext(ctx, "TopFree queue reconciled",
+			"queued", len(queue.candidates), "download_blocked", queue.downloadBlocked,
+			"pending_hash", queue.pendingHash, "blocking_downloads", len(queue.blocking),
+		)
+		if c.logger.Enabled(ctx, slog.LevelDebug) {
+			if queue.pendingHash != "" {
+				c.logger.DebugContext(ctx, "submitted TopFree torrent blocks next download", "reason", "awaiting_client_visibility", "hash", queue.pendingHash)
+			}
+			for _, torrent := range queue.blocking {
+				attrs := append(managedTorrentLogAttrs(torrent), slog.String("reason", "unfinished_current_topfree"))
+				c.logger.LogAttrs(ctx, slog.LevelDebug, "unfinished current TopFree torrent blocks next download", attrs...)
+			}
+		}
 	}
 	var plan Plan
 	if c.bonusSource == nil {
@@ -186,21 +206,15 @@ func (c *Coordinator) RunOnce(ctx context.Context, candidates []domain.Candidate
 			"queued", len(plan.Queued),
 			"downloads", len(plan.Downloads),
 			"skipped", len(plan.Skipped),
+			"download_blocked", queue.downloadBlocked,
+			"save_path", plan.EffectiveSavePath,
 			"current_disk_bytes", plan.CurrentDiskUsageBytes,
 			"projected_disk_bytes", plan.ProjectedDiskUsageBytes,
 			"initial_free_bytes", plan.InitialFreeSpaceBytes,
 			"projected_free_bytes", plan.ProjectedFreeSpaceBytes,
 			"reserve_bytes", plan.MinFreeSpaceBytes,
 		)
-		c.logger.DebugContext(ctx, "TopFree plan details",
-			"tag_hashes", plan.TagAsManaged,
-			"unmark_hashes", plan.UnmarkForDeletion,
-			"mark_hashes", plan.MarkForDeletion,
-			"remove_expired", plan.RemoveExpired,
-			"queued", plan.Queued,
-			"downloads", plan.Downloads,
-			"skipped", plan.Skipped,
-		)
+		logPlanDetails(ctx, c.logger, plan, queue.downloadBlocked)
 	}
 	if err := c.executor.Execute(ctx, plan); err != nil {
 		c.bonusSnapshot = nil

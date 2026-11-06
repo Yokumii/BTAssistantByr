@@ -212,7 +212,22 @@ BYR TopFree 列表页无法解析时，程序会记录包含解析原因的 WARN
 
 `info` 主要记录启动、停止、批准、实际完成的标签修改、删除和新增下载，以及执行结果；常规 TopFree 快照刷新、空间查询、大小过滤、计划计算和魔力估算明细记录为 `debug`。快照失效、重试和空间不足延后等情况仍保留 WARN。删除成功日志表示 qBittorrent 已确认删除请求，空间是否实际释放由后续空间复检日志说明。
 
+计划摘要只展示计数、容量和队列状态，复杂列表按对象逐条记录，字段包含种子 ID、Hash、名称、大小、做种/下载人数和 Free 截止时间；回收对象还包含已完成字节数、客户端状态和路径。跳过候选记录 `reason`；容量不足时同时记录 `available_bytes`。例如，以下明细省略时间、模块和末尾源码位置：
+
+```text
+DEBUG TopFree queued candidate torrent_id=363456 hash=ab75cef9df29e746580afd97b6e46dbc0560d9a4 name="花儿与少年第六季" size=122.32GiB seeders=21 leechers=3 free_until=2026-11-08T12:54:22+08:00 queue_position=1 download_blocked=true
+DEBUG unfinished current TopFree torrent blocks next download hash=0123456789abcdef0123456789abcdef01234567 name="Existing download" size=50.00GiB completed=30.00GiB amount_left=20.00GiB state=downloading added_at=2026-11-06T16:00:00+08:00 save_path=/downloads tags=[sc] reason=unfinished_current_topfree
+```
+
+排查“队列有候选却没有新增下载”时，先查看 `TopFree queue reconciled` 和 `TopFree plan built`：`download_blocked=true` 表示串行下载受阻；`reason=unfinished_current_topfree` 会给出尚未完成的当前 TopFree 任务，`reason=awaiting_client_visibility` 则表示上次新增请求已经确认，但任务尚未出现在客户端快照中。没有阻塞时，结合逐条 `TopFree candidate skipped` 的原因、大小过滤和容量摘要判断。
+
+执行失败日志 `TopFree execution stopped` 包含 `phase` 和 `confirmed_write_requests`，用于定位失败阶段和此前成功返回的 qBittorrent 写请求数；该计数按请求计，不是种子数量。请求超时等情况仍可能存在未确认的远端结果，程序不会据此回滚；后续轮次重新读取客户端快照。可延后的瞬时网络错误、空间不足和过期计划使用 WARN，永久执行错误使用 ERROR。
+
+网络日志包含具体操作、目标种子或路径、尝试次数和耗时；普通开始/完成记录在 DEBUG，重试后恢复为 INFO，重试耗尽为 WARN。HTTP 错误附带请求方法和接口路径；错误中的 URL 不展示用户信息、查询参数或片段，保留超时等根因。初始化记录配置路径和尝试轮次，BYR 凭据来源日志只表示凭据已加载，首次读取成功前不代表会话已经验证。
+
 文件日志继续使用包含 `time=`、`level=`、`msg=` 和业务字段的结构化文本格式，保留完整时间和时区、原始容量字节数；`debug` 配置下保留完整源码位置。文件日志始终不包含 ANSI 颜色码。日志不会记录密码、BYR Cookie、qBittorrent SID、passkey 或包含 passkey 的下载 URL。
+
+终端与文件共享同一事件的动态字段值。某个输出写入失败时，程序继续尝试另一个输出，并在关闭日志系统时返回首次写入错误（包括短写），因此退出时可能出现 `close logging: write file log: ...` 等错误。
 
 如果终端重启后出现 `open config/config.yaml: The system cannot find the path specified`，说明本次启动在当前工作目录下找不到默认配置路径。检查终端的启动命令是否保留 `-config`，并按上面的示例固定工作目录及配置绝对路径；这与 BYR 请求失败是两个独立问题。
 

@@ -30,7 +30,7 @@ func (c *BonusTracker) ListSeeding(ctx context.Context, userID string) ([]domain
 }
 
 func (c *BonusTracker) TorrentMetadata(ctx context.Context, id domain.TorrentID) (domain.TorrentMetadata, error) {
-	return DoValue(ctx, c.policy, "read BYR publication metadata", func() (domain.TorrentMetadata, error) {
+	return DoValue(ctx, c.policy.withLogAttrs("torrent_id", id), "read BYR publication metadata", func() (domain.TorrentMetadata, error) {
 		return c.delegate.TorrentMetadata(ctx, id)
 	})
 }

@@ -84,10 +84,10 @@ func (c *Client) readBonusPage(ctx context.Context, path string, query url.Value
 	defer response.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxPageSize+1))
 	if err != nil {
-		return nil, fmt.Errorf("read BYR bonus page: %w", err)
+		return nil, fmt.Errorf("read BYR bonus page /%s: %w", path, err)
 	}
 	if len(body) > maxPageSize {
-		return nil, fmt.Errorf("%w: bonus page exceeds size limit", port.ErrInvalidTrackerSnapshot)
+		return nil, fmt.Errorf("%w: bonus page /%s exceeds size limit", port.ErrInvalidTrackerSnapshot, path)
 	}
 	return body, nil
 }
@@ -192,7 +192,7 @@ func parseSeeding(reader io.Reader) ([]domain.SeededTorrent, error) {
 			return
 		}
 		if len(cells) != 8 {
-			err = fmt.Errorf("%w: seeding columns invalid", port.ErrInvalidTrackerSnapshot)
+			err = fmt.Errorf("%w: seeding columns invalid: expected_columns=8 actual_columns=%d", port.ErrInvalidTrackerSnapshot, len(cells))
 			return
 		}
 		var torrent domain.SeededTorrent
@@ -216,7 +216,7 @@ func parseSeeding(reader io.Reader) ([]domain.SeededTorrent, error) {
 		return nil, fmt.Errorf("%w: parse seeding record: %w", port.ErrInvalidTrackerSnapshot, err)
 	}
 	if len(torrents) != count {
-		return nil, fmt.Errorf("%w: incomplete seeding list", port.ErrInvalidTrackerSnapshot)
+		return nil, fmt.Errorf("%w: incomplete seeding list: expected_records=%d parsed_records=%d", port.ErrInvalidTrackerSnapshot, count, len(torrents))
 	}
 	return torrents, nil
 }
