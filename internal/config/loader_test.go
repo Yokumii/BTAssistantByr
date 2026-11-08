@@ -72,6 +72,52 @@ func TestLoad(t *testing.T) {
 	if configuration.Runtime.LogMaxSizeBytes != 20*mib || configuration.Runtime.LogMaxBackups != 5 {
 		t.Errorf("unexpected default log rotation: %+v", configuration.Runtime)
 	}
+	if configuration.Resend != nil {
+		t.Error("notifications must be disabled when resend is omitted")
+	}
+}
+
+func TestLoadResend(t *testing.T) {
+	t.Parallel()
+	const resendYAML = `
+resend:
+  api_key: " re_test_secret "
+  from: " BTAssistantByr <bt@example.com> "
+  to: [" you@example.com ", "second@example.com"]
+  timeout: "15s"
+`
+	configuration, err := Load(writeConfig(t, validYAML+resendYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := configuration.Resend
+	if got == nil || got.APIKey != "re_test_secret" || got.From != "BTAssistantByr <bt@example.com>" || len(got.To) != 2 || got.To[0] != "you@example.com" || got.Timeout != 15*time.Second {
+		t.Fatal("unexpected Resend configuration")
+	}
+	for _, test := range []struct{ name, content string }{
+		{"empty block", "\nresend: {}\n"},
+		{"missing key", strings.Replace(resendYAML, `api_key: " re_test_secret "`, `api_key: ""`, 1)},
+		{"key newline", strings.Replace(resendYAML, `api_key: " re_test_secret "`, `api_key: "re_test_secret\ninvalid"`, 1)},
+		{"invalid sender", strings.Replace(resendYAML, `BTAssistantByr <bt@example.com>`, "invalid", 1)},
+		{"no recipients", strings.Replace(resendYAML, `[" you@example.com ", "second@example.com"]`, "[]", 1)},
+		{"recipient display name", strings.Replace(resendYAML, "second@example.com", "Name <second@example.com>", 1)},
+		{"invalid recipient", strings.Replace(resendYAML, "second@example.com", "invalid", 1)},
+		{"too many recipients", strings.Replace(resendYAML, `[" you@example.com ", "second@example.com"]`, "["+strings.Repeat("you@example.com,", 50)+"you@example.com]", 1)},
+		{"missing timeout", strings.Replace(resendYAML, `  timeout: "15s"`, "", 1)},
+		{"zero timeout", strings.Replace(resendYAML, "15s", "0s", 1)},
+		{"invalid timeout", strings.Replace(resendYAML, "15s", "later", 1)},
+		{"unknown field", resendYAML + "  unexpected: true\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := Load(writeConfig(t, validYAML+test.content))
+			if !errors.Is(err, ErrInvalidConfig) {
+				t.Fatalf("Load() error = %v, want invalid configuration", err)
+			}
+			if strings.Contains(err.Error(), "re_test_secret") {
+				t.Fatal("configuration error leaked API key")
+			}
+		})
+	}
 }
 
 func TestLoadRejectsInvalidConfiguration(t *testing.T) {

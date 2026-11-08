@@ -51,14 +51,17 @@ type MutationClient interface {
 
 // Executor applies a previously computed Plan. It is not started automatically.
 type Executor struct {
-	now                func() time.Time
-	source             DownloadURLSource
-	client             MutationClient
-	savePath           string
-	minFreeSpaceBytes  int64
-	logger             *slog.Logger
-	spaceCheckInterval time.Duration
-	spaceCheckAttempts int
+	now                 func() time.Time
+	source              DownloadURLSource
+	client              MutationClient
+	savePath            string
+	minFreeSpaceBytes   int64
+	logger              *slog.Logger
+	notifier            port.Notifier
+	notificationBonus   port.BonusTracker
+	notificationTimeout time.Duration
+	spaceCheckInterval  time.Duration
+	spaceCheckAttempts  int
 }
 
 // SetLogger sets the logger used by Execute; a nil logger disables logging.
@@ -91,7 +94,8 @@ func NewExecutor(source DownloadURLSource, client MutationClient, savePath strin
 // Execute validates and preflights the complete plan before applying writes in order.
 // It stops on the first error; already completed external writes are not rolled back.
 func (e *Executor) Execute(ctx context.Context, plan Plan) (resultErr error) {
-	progress := executionProgress{phase: "validate_plan"}
+	progress := executionProgress{phase: "validate_plan", started: e.now()}
+	defer func() { e.notifyExecution(ctx, plan, &progress, resultErr) }()
 	defer func() {
 		if resultErr == nil || e.logger == nil {
 			return
@@ -134,8 +138,11 @@ func (e *Executor) Execute(ctx context.Context, plan Plan) (resultErr error) {
 		return err
 	}
 	progress.phase = "check_space_before_writes"
-	if err := e.verifyDiskSpaceBeforeWrites(ctx, prepared); err != nil {
+	if err := e.verifyDiskSpaceBeforeWrites(ctx, prepared, &progress); err != nil {
 		return err
+	}
+	if e.notifier != nil && planHasWrites(plan) {
+		e.observeBeforeWrites(ctx, &progress)
 	}
 	progress.phase = "check_freshness_before_writes"
 	if err := e.verifyBonusFreshness(plan); err != nil {
@@ -168,7 +175,7 @@ func (e *Executor) Execute(ctx context.Context, plan Plan) (resultErr error) {
 		return err
 	}
 	progress.phase = "check_space_after_cleanup"
-	if err := e.verifyDiskSpaceAfterCleanup(ctx, prepared); err != nil {
+	if err := e.verifyDiskSpaceAfterCleanup(ctx, prepared, &progress); err != nil {
 		return err
 	}
 	progress.phase = "check_freshness_before_add"
@@ -181,6 +188,7 @@ func (e *Executor) Execute(ctx context.Context, plan Plan) (resultErr error) {
 			return err
 		}
 	}
+	progress.phase = "completed"
 	if e.logger != nil {
 		level := slog.LevelDebug
 		if len(prepared.tagAsManaged)+len(prepared.unmarkForDeletion)+len(prepared.markForDeletion)+len(prepared.removeExpired)+len(prepared.downloads) > 0 {
@@ -194,6 +202,10 @@ func (e *Executor) Execute(ctx context.Context, plan Plan) (resultErr error) {
 type executionProgress struct {
 	phase           string
 	confirmedWrites int
+	started         time.Time
+	actions         []writeAction
+	before          notificationSnapshot
+	afterCleanup    *domain.DiskSpace
 }
 
 func (e *Executor) verifyBonusFreshness(plan Plan) error {
@@ -382,10 +394,9 @@ func (e *Executor) addTags(ctx context.Context, hashes []domain.TorrentHash, tag
 	if e.logger != nil {
 		e.logger.DebugContext(ctx, operation, "hashes", hashes, "tag", tag)
 	}
-	if err := e.client.AddTags(ctx, hashes, []string{tag}); err != nil {
+	if err := progress.write("add_tags:"+tag, hashes, func() error { return e.client.AddTags(ctx, hashes, []string{tag}) }); err != nil {
 		return fmt.Errorf("%s: %w", operation, err)
 	}
-	progress.confirmedWrites++
 	if e.logger != nil {
 		e.logger.InfoContext(ctx, "qBittorrent tags added", "hashes", hashes, "tag", tag)
 	}
@@ -402,17 +413,16 @@ func (e *Executor) removeTags(ctx context.Context, hashes []domain.TorrentHash, 
 	if e.logger != nil {
 		e.logger.DebugContext(ctx, operation, "hashes", hashes, "tag", tag)
 	}
-	if err := e.client.RemoveTags(ctx, hashes, []string{tag}); err != nil {
+	if err := progress.write("remove_tags:"+tag, hashes, func() error { return e.client.RemoveTags(ctx, hashes, []string{tag}) }); err != nil {
 		return fmt.Errorf("%s: %w", operation, err)
 	}
-	progress.confirmedWrites++
 	if e.logger != nil {
 		e.logger.InfoContext(ctx, "qBittorrent tags removed", "hashes", hashes, "tag", tag)
 	}
 	return nil
 }
 
-func (e *Executor) verifyDiskSpaceBeforeWrites(ctx context.Context, plan *preparedExecutionPlan) error {
+func (e *Executor) verifyDiskSpaceBeforeWrites(ctx context.Context, plan *preparedExecutionPlan, progress *executionProgress) error {
 	if len(plan.downloads) == 0 {
 		return nil
 	}
@@ -423,6 +433,7 @@ func (e *Executor) verifyDiskSpaceBeforeWrites(ctx context.Context, plan *prepar
 	if err := validateDiskSpace(space); err != nil {
 		return err
 	}
+	progress.before.space = &space
 	if planSpacePath := strings.TrimSpace(plan.effectiveSavePath); planSpacePath != "" && !sameDiskPath(planSpacePath, space.Path) {
 		return fmt.Errorf("%w: planned save path %q changed to %q", ErrInvalidPlan, planSpacePath, space.Path)
 	}
@@ -475,10 +486,9 @@ func (e *Executor) removeExpiredDownloads(ctx context.Context, torrents []domain
 	if e.logger != nil {
 		e.logger.WarnContext(ctx, "stopping downloads no longer TopFree", "hashes", hashes)
 	}
-	if err := e.client.Pause(ctx, hashes); err != nil {
+	if err := progress.write("pause", hashes, func() error { return e.client.Pause(ctx, hashes) }); err != nil {
 		return fmt.Errorf("stop downloads no longer TopFree: %w", err)
 	}
-	progress.confirmedWrites++
 	if e.logger != nil {
 		e.logger.InfoContext(ctx, "stopped downloads no longer TopFree", "hashes", hashes)
 	}
@@ -488,10 +498,9 @@ func (e *Executor) removeExpiredDownloads(ctx context.Context, torrents []domain
 	if e.logger != nil {
 		e.logger.WarnContext(ctx, "deleting downloads no longer TopFree", "hashes", hashes, "delete_files", true)
 	}
-	if err := e.client.Delete(ctx, hashes, true); err != nil {
+	if err := progress.write("delete_with_files", hashes, func() error { return e.client.Delete(ctx, hashes, true) }); err != nil {
 		return fmt.Errorf("delete downloads no longer TopFree: %w", err)
 	}
-	progress.confirmedWrites++
 	if e.logger != nil {
 		e.logger.InfoContext(ctx, "deleted downloads no longer TopFree", "hashes", hashes, "delete_files", true)
 	}
@@ -512,10 +521,9 @@ func (e *Executor) cleanupDownloads(ctx context.Context, downloads []preparedDow
 		if e.logger != nil {
 			e.logger.DebugContext(ctx, "reannouncing cleanup torrents", "hashes", hashes)
 		}
-		if err := e.client.Reannounce(ctx, hashes); err != nil {
+		if err := progress.write("reannounce", hashes, func() error { return e.client.Reannounce(ctx, hashes) }); err != nil {
 			return fmt.Errorf("reannounce cleanup torrents: %w", err)
 		}
-		progress.confirmedWrites++
 		if e.logger != nil {
 			e.logger.DebugContext(ctx, "reannounced cleanup torrents", "hashes", hashes)
 		}
@@ -525,10 +533,9 @@ func (e *Executor) cleanupDownloads(ctx context.Context, downloads []preparedDow
 		if e.logger != nil {
 			e.logger.DebugContext(ctx, "stopping cleanup torrents", "hashes", hashes)
 		}
-		if err := e.client.Pause(ctx, hashes); err != nil {
+		if err := progress.write("pause", hashes, func() error { return e.client.Pause(ctx, hashes) }); err != nil {
 			return fmt.Errorf("stop cleanup torrents: %w", err)
 		}
-		progress.confirmedWrites++
 		if e.logger != nil {
 			e.logger.InfoContext(ctx, "stopped cleanup torrents", "hashes", hashes)
 		}
@@ -538,10 +545,9 @@ func (e *Executor) cleanupDownloads(ctx context.Context, downloads []preparedDow
 		if e.logger != nil {
 			e.logger.DebugContext(ctx, "deleting cleanup torrents", "hashes", hashes, "delete_files", true)
 		}
-		if err := e.client.Delete(ctx, hashes, true); err != nil {
+		if err := progress.write("delete_with_files", hashes, func() error { return e.client.Delete(ctx, hashes, true) }); err != nil {
 			return fmt.Errorf("delete cleanup torrents: %w", err)
 		}
-		progress.confirmedWrites++
 		if e.logger != nil {
 			e.logger.InfoContext(ctx, "deleted cleanup torrents", "hashes", hashes, "delete_files", true)
 		}
@@ -549,7 +555,7 @@ func (e *Executor) cleanupDownloads(ctx context.Context, downloads []preparedDow
 	return nil
 }
 
-func (e *Executor) verifyDiskSpaceAfterCleanup(ctx context.Context, plan *preparedExecutionPlan) error {
+func (e *Executor) verifyDiskSpaceAfterCleanup(ctx context.Context, plan *preparedExecutionPlan, progress *executionProgress) error {
 	if len(plan.downloads) == 0 {
 		return nil
 	}
@@ -566,6 +572,7 @@ func (e *Executor) verifyDiskSpaceAfterCleanup(ctx context.Context, plan *prepar
 		if err := validateDiskSpace(space); err != nil {
 			return err
 		}
+		progress.afterCleanup = &space
 		if planSpacePath := strings.TrimSpace(plan.effectiveSavePath); planSpacePath != "" && !sameDiskPath(planSpacePath, space.Path) {
 			return fmt.Errorf("%w: save path changed from %q to %q after cleanup", ErrInvalidPlan, planSpacePath, space.Path)
 		}
@@ -659,14 +666,15 @@ func (e *Executor) addDownload(ctx context.Context, download preparedDownload, p
 	if e.logger != nil {
 		e.logger.DebugContext(ctx, "adding TopFree torrent", "torrent_id", download.candidate.ID, "name", download.candidate.Name, "save_path", e.savePath, "tag", ManagedTag)
 	}
-	if err := e.client.Add(ctx, port.AddTorrentRequest{
-		SourceURL: download.sourceURL,
-		SavePath:  e.savePath,
-		Tags:      []string{ManagedTag},
+	if err := progress.write("add", []domain.TorrentHash{download.candidate.Hash}, func() error {
+		return e.client.Add(ctx, port.AddTorrentRequest{
+			SourceURL: download.sourceURL,
+			SavePath:  e.savePath,
+			Tags:      []string{ManagedTag},
+		})
 	}); err != nil {
 		return fmt.Errorf("add TopFree torrent %s: %w", download.candidate.ID, err)
 	}
-	progress.confirmedWrites++
 	if e.logger != nil {
 		e.logger.InfoContext(ctx, "TopFree torrent added", "torrent_id", download.candidate.ID, "name", download.candidate.Name, "save_path", e.savePath, "tag", ManagedTag)
 	}

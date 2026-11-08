@@ -23,6 +23,15 @@ strategy:
 execution:
   mode: "request_approval"
 
+# 可选：省略整个 resend 块即关闭邮件；启用时以下字段均必填。
+# 发件地址须使用已在 Resend 验证的域名。
+# resend:
+#   api_key: "re_your_api_key"
+#   from: "BTAssistantByr <bt@example.com>"
+#   to:
+#     - "you@example.com"
+#   timeout: "15s"
+
 runtime:
   data_dir: "data"
   log_dir: "logs"

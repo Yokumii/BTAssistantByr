@@ -14,6 +14,15 @@ type Config struct {
 	Strategy  Strategy
 	Execution Execution
 	Runtime   Runtime
+	Resend    *Resend
+}
+
+// Resend enables execution emails only when explicitly configured.
+type Resend struct {
+	APIKey  string
+	From    string
+	To      []string
+	Timeout time.Duration
 }
 
 // Tracker contains BYR connection settings.

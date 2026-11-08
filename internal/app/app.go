@@ -11,6 +11,7 @@ import (
 
 	"github.com/Yokumii/BTAssistantByr/internal/adapter/byr"
 	"github.com/Yokumii/BTAssistantByr/internal/adapter/qbittorrent"
+	"github.com/Yokumii/BTAssistantByr/internal/adapter/resend"
 	"github.com/Yokumii/BTAssistantByr/internal/config"
 	"github.com/Yokumii/BTAssistantByr/internal/domain"
 	"github.com/Yokumii/BTAssistantByr/internal/netretry"
@@ -154,6 +155,13 @@ func AssembleWithLogger(
 		return nil, fmt.Errorf("create TopFree executor: %w", err)
 	}
 	executor.SetLogger(rootLogger.With("component", "topfree_executor"))
+	if notification := configuration.Resend; notification != nil {
+		notifier := resend.NewClient(notification.APIKey, notification.From, notification.To, notification.Timeout, retryPolicy)
+		if err := executor.SetNotifier(notifier, netretry.NewBonusTracker(byrClient, retryPolicy), notification.Timeout); err != nil {
+			return nil, fmt.Errorf("configure execution notifications: %w", err)
+		}
+		logger.InfoContext(ctx, "Resend execution notifications enabled")
+	}
 	guardedExecutor, err := topfree.NewPolicyExecutor(configuration.Execution.Mode, executor, approver)
 	if err != nil {
 		return nil, fmt.Errorf("create TopFree execution policy: %w", err)

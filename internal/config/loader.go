@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net/mail"
 	"net/url"
 	"os"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Yokumii/BTAssistantByr/internal/domain"
 	"go.yaml.in/yaml/v3"
@@ -38,6 +40,14 @@ type yamlConfig struct {
 	Strategy  yamlStrategy  `yaml:"strategy"`
 	Execution yamlExecution `yaml:"execution"`
 	Runtime   yamlRuntime   `yaml:"runtime"`
+	Resend    *yamlResend   `yaml:"resend"`
+}
+
+type yamlResend struct {
+	APIKey  string   `yaml:"api_key"`
+	From    string   `yaml:"from"`
+	To      []string `yaml:"to"`
+	Timeout string   `yaml:"timeout"`
 }
 
 type yamlTracker struct {
@@ -117,6 +127,10 @@ func Load(path string) (Config, error) {
 }
 
 func validate(raw yamlConfig) (Config, error) {
+	resend, err := validateResend(raw.Resend)
+	if err != nil {
+		return Config{}, err
+	}
 	priority := "free_time"
 	if raw.Strategy.Priority != nil {
 		priority = strings.ToLower(strings.TrimSpace(*raw.Strategy.Priority))
@@ -232,6 +246,7 @@ func validate(raw yamlConfig) (Config, error) {
 	}
 
 	return Config{
+		Resend: resend,
 		Tracker: Tracker{
 			BaseURL:  raw.Tracker.BaseURL,
 			ProxyURL: raw.Tracker.ProxyURL,
@@ -264,6 +279,37 @@ func validate(raw yamlConfig) (Config, error) {
 			NetworkRetryCount: *raw.Runtime.NetworkRetryCount,
 		},
 	}, nil
+}
+
+func validateResend(raw *yamlResend) (*Resend, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	key := strings.TrimSpace(raw.APIKey)
+	if key == "" || strings.IndexFunc(key, unicode.IsSpace) >= 0 {
+		return nil, fieldError("resend.api_key", "must be a nonempty token without whitespace")
+	}
+	from := strings.TrimSpace(raw.From)
+	if _, err := mail.ParseAddress(from); err != nil || strings.ContainsAny(from, "\r\n") {
+		return nil, fieldError("resend.from", "must be a valid email address")
+	}
+	if len(raw.To) == 0 || len(raw.To) > 50 {
+		return nil, fieldError("resend.to", "must contain between 1 and 50 email addresses")
+	}
+	to := make([]string, len(raw.To))
+	for i, value := range raw.To {
+		value = strings.TrimSpace(value)
+		address, err := mail.ParseAddress(value)
+		if err != nil || address.Address != value || strings.ContainsAny(value, "\r\n") {
+			return nil, fieldError("resend.to", "must contain plain email addresses")
+		}
+		to[i] = value
+	}
+	timeout, err := time.ParseDuration(strings.TrimSpace(raw.Timeout))
+	if err != nil || timeout <= 0 {
+		return nil, fieldError("resend.timeout", "must be a positive Go duration")
+	}
+	return &Resend{APIKey: key, From: from, To: to, Timeout: timeout}, nil
 }
 
 func oneOf(value string, allowed ...string) bool {
