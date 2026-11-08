@@ -1,8 +1,8 @@
 module github.com/Yokumii/BTAssistantByr
 
-go 1.24.0
+go 1.26.0
 
 require (
-	go.yaml.in/yaml/v3 v3.0.5
-	golang.org/x/net v0.50.0
+	go.yaml.in/yaml/v3 v3.0.6
+	golang.org/x/net v0.62.0
 )
