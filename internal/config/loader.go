@@ -18,6 +18,7 @@ import (
 const (
 	maxConfigSize = 1 << 20
 	gib           = int64(1 << 30)
+	mib           = int64(1 << 20)
 )
 
 var (
@@ -72,6 +73,8 @@ type yamlRuntime struct {
 	LogDir            string `yaml:"log_dir"`
 	LogLevel          string `yaml:"log_level"`
 	LogColor          string `yaml:"log_color"`
+	LogMaxSizeMiB     *int64 `yaml:"log_max_size_mib"`
+	LogMaxBackups     *int   `yaml:"log_max_backups"`
 	NetworkRetryCount *int   `yaml:"network_retry_count"`
 }
 
@@ -213,6 +216,20 @@ func validate(raw yamlConfig) (Config, error) {
 	if !oneOf(raw.Runtime.LogColor, "auto", "always", "never") {
 		return Config{}, fieldError("runtime.log_color", "must be auto, always, or never")
 	}
+	logMaxSizeMiB := DefaultLogMaxSizeMiB
+	if raw.Runtime.LogMaxSizeMiB != nil {
+		logMaxSizeMiB = *raw.Runtime.LogMaxSizeMiB
+	}
+	if logMaxSizeMiB <= 0 || logMaxSizeMiB > math.MaxInt64/mib {
+		return Config{}, fieldError("runtime.log_max_size_mib", "must be positive and must not overflow bytes")
+	}
+	logMaxBackups := DefaultLogMaxBackups
+	if raw.Runtime.LogMaxBackups != nil {
+		logMaxBackups = *raw.Runtime.LogMaxBackups
+	}
+	if logMaxBackups < 1 || logMaxBackups > 100 {
+		return Config{}, fieldError("runtime.log_max_backups", "must be between 1 and 100")
+	}
 
 	return Config{
 		Tracker: Tracker{
@@ -242,6 +259,8 @@ func validate(raw yamlConfig) (Config, error) {
 			LogDir:            raw.Runtime.LogDir,
 			LogLevel:          raw.Runtime.LogLevel,
 			LogColor:          raw.Runtime.LogColor,
+			LogMaxSizeBytes:   logMaxSizeMiB * mib,
+			LogMaxBackups:     logMaxBackups,
 			NetworkRetryCount: *raw.Runtime.NetworkRetryCount,
 		},
 	}, nil

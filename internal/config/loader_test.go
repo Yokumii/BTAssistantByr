@@ -69,6 +69,9 @@ func TestLoad(t *testing.T) {
 	if configuration.Runtime.DataDir != "data" || configuration.Runtime.LogDir != "logs" || configuration.Runtime.LogLevel != "debug" || configuration.Runtime.LogColor != "auto" || configuration.Runtime.NetworkRetryCount != 3 {
 		t.Errorf("unexpected runtime configuration: %+v", configuration.Runtime)
 	}
+	if configuration.Runtime.LogMaxSizeBytes != 20*mib || configuration.Runtime.LogMaxBackups != 5 {
+		t.Errorf("unexpected default log rotation: %+v", configuration.Runtime)
+	}
 }
 
 func TestLoadRejectsInvalidConfiguration(t *testing.T) {
@@ -112,6 +115,13 @@ func TestLoadRejectsInvalidConfiguration(t *testing.T) {
 		{name: "invalid log level", content: strings.Replace(validYAML, `log_level: " DEBUG "`, `log_level: "trace"`, 1)},
 		{name: "missing log color", content: strings.Replace(validYAML, `log_color: " AUTO "`, `log_color: ""`, 1)},
 		{name: "invalid log color", content: strings.Replace(validYAML, `log_color: " AUTO "`, `log_color: "rainbow"`, 1)},
+		{name: "zero log size", content: validYAML + "  log_max_size_mib: 0\n"},
+		{name: "negative log size", content: validYAML + "  log_max_size_mib: -1\n"},
+		{name: "log size overflow", content: validYAML + "  log_max_size_mib: 8796093022208\n"},
+		{name: "fractional log size", content: validYAML + "  log_max_size_mib: 0.5\n"},
+		{name: "zero log backups", content: validYAML + "  log_max_backups: 0\n"},
+		{name: "negative log backups", content: validYAML + "  log_max_backups: -1\n"},
+		{name: "excessive log backups", content: validYAML + "  log_max_backups: 101\n"},
 		{name: "missing network retry count", content: strings.Replace(validYAML, "  network_retry_count: 3\n", "", 1)},
 		{name: "negative network retry count", content: strings.Replace(validYAML, "network_retry_count: 3", "network_retry_count: -1", 1)},
 		{name: "excessive network retry count", content: strings.Replace(validYAML, "network_retry_count: 3", "network_retry_count: 101", 1)},
@@ -138,6 +148,31 @@ func TestLoadAcceptsYOLOExecutionMode(t *testing.T) {
 	}
 	if configuration.Execution.Mode != domain.ExecutionModeYOLO {
 		t.Errorf("execution mode = %q, want %q", configuration.Execution.Mode, domain.ExecutionModeYOLO)
+	}
+}
+
+func TestLoadLogRotation(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		content string
+		size    int64
+		backups int
+	}{
+		{name: "custom", content: "  log_max_size_mib: 8\n  log_max_backups: 3\n", size: 8 * mib, backups: 3},
+		{name: "size only", content: "  log_max_size_mib: 1\n", size: mib, backups: 5},
+		{name: "backups only", content: "  log_max_backups: 1\n", size: 20 * mib, backups: 1},
+		{name: "upper boundaries", content: "  log_max_size_mib: " + strconv.FormatInt(math.MaxInt64/mib, 10) + "\n  log_max_backups: 100\n", size: (math.MaxInt64 / mib) * mib, backups: 100},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			configuration, err := Load(writeConfig(t, validYAML+test.content))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if configuration.Runtime.LogMaxSizeBytes != test.size || configuration.Runtime.LogMaxBackups != test.backups {
+				t.Fatalf("unexpected log rotation: %+v", configuration.Runtime)
+			}
+		})
 	}
 }
 

@@ -49,11 +49,19 @@ type Execution struct {
 	Mode domain.ExecutionMode
 }
 
-// Runtime contains paths used for generated application data.
+const (
+	DefaultLogMaxSizeMiB = int64(20)
+	DefaultLogMaxBackups = 5
+)
+
+// Runtime contains paths and logging limits for generated application data.
 type Runtime struct {
-	DataDir           string
-	LogDir            string
-	LogLevel          string
-	LogColor          string
+	DataDir  string
+	LogDir   string
+	LogLevel string
+	LogColor string
+	// LogMaxSizeBytes and LogMaxBackups default to 20 MiB and 5 in Load.
+	LogMaxSizeBytes   int64
+	LogMaxBackups     int
 	NetworkRetryCount int
 }

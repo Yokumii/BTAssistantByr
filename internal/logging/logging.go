@@ -27,20 +27,24 @@ var (
 	ErrLogDirRequired  = errors.New("log directory is required")
 	ErrInvalidLevel    = errors.New("invalid log level")
 	ErrInvalidColor    = errors.New("invalid log color mode")
+	ErrInvalidRotation = errors.New("log maximum size must be positive and backups must be between 1 and 100")
 )
 
-// Options controls both console and persistent file logs.
+// Options controls both console and persistent file logs. MaxSizeBytes must be
+// positive; MaxBackups must be between 1 and 100. The config loader supplies defaults.
 type Options struct {
-	Level   string
-	Color   string
-	LogDir  string
-	Console io.Writer
+	Level        string
+	Color        string
+	LogDir       string
+	Console      io.Writer
+	MaxSizeBytes int64
+	MaxBackups   int
 }
 
 // System owns the logger and its persistent file.
 type System struct {
 	logger   *slog.Logger
-	file     *os.File
+	file     *rotatingFile
 	filePath string
 	writes   *writeFailure
 }
@@ -62,12 +66,15 @@ func New(options Options) (*System, error) {
 	if err != nil {
 		return nil, err
 	}
+	if options.MaxSizeBytes <= 0 || options.MaxBackups < 1 || options.MaxBackups > 100 {
+		return nil, ErrInvalidRotation
+	}
 
 	if err := os.MkdirAll(options.LogDir, 0o750); err != nil {
 		return nil, fmt.Errorf("create log directory: %w", err)
 	}
 	filePath := filepath.Join(options.LogDir, FileName)
-	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640)
+	file, err := newRotatingFile(filePath, options.MaxSizeBytes, options.MaxBackups)
 	if err != nil {
 		return nil, fmt.Errorf("open log file: %w", err)
 	}
@@ -102,10 +109,8 @@ func (system *System) Close() error {
 	if system.file == nil {
 		return system.writes.err()
 	}
-	syncErr := system.file.Sync()
 	closeErr := system.file.Close()
-	system.file = nil
-	return errors.Join(system.writes.err(), syncErr, closeErr)
+	return errors.Join(system.writes.err(), closeErr)
 }
 
 // slog discards Handler errors, so keep the first write failure for Close.

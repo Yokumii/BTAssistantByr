@@ -65,10 +65,12 @@ func run(
 		return fmt.Errorf("load configuration: %w", err)
 	}
 	logSystem, err := logging.New(logging.Options{
-		Level:   configuration.Runtime.LogLevel,
-		Color:   configuration.Runtime.LogColor,
-		LogDir:  configuration.Runtime.LogDir,
-		Console: errorOutput,
+		Level:        configuration.Runtime.LogLevel,
+		Color:        configuration.Runtime.LogColor,
+		LogDir:       configuration.Runtime.LogDir,
+		Console:      errorOutput,
+		MaxSizeBytes: configuration.Runtime.LogMaxSizeBytes,
+		MaxBackups:   configuration.Runtime.LogMaxBackups,
 	})
 	if err != nil {
 		return fmt.Errorf("initialize logging: %w", err)

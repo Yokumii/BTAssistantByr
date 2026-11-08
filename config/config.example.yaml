@@ -28,4 +28,7 @@ runtime:
   log_dir: "logs"
   log_level: "info"
   log_color: "auto"
+  # 可选：省略时单文件上限 20 MiB，保留 5 份备份。
+  log_max_size_mib: 20
+  log_max_backups: 5
   network_retry_count: 3

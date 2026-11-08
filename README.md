@@ -121,6 +121,8 @@ runtime:
   log_dir: "logs"
   log_level: "info"
   log_color: "auto"
+  log_max_size_mib: 20
+  log_max_backups: 5
   network_retry_count: 3
 ```
 
@@ -191,6 +193,8 @@ BYR 刷新成功后会立即检查一次队列。刷新重试仍失败时，旧�
 | --- | --- |
 | `runtime.data_dir` | 运行数据目录；包含敏感的 BYR 会话缓存 `byr_session.json`，不要共享或公开。 |
 | `runtime.log_dir` | 文件日志目录，日志文件为 `btassistantbyr.log`。 |
+| `runtime.log_max_size_mib` | 可选，单个日志文件的大小上限，单位 MiB，必须为正整数且换算字节不溢出；省略时为 `20`。 |
+| `runtime.log_max_backups` | 可选，保留的轮转备份数量，范围 `1..100`；省略时为 `5`。 |
 | `runtime.log_level` | `debug`、`info`、`warn` 或 `error`；同时控制终端和文件。日常运行使用 `info`，排查问题时使用 `debug`。 |
 | `runtime.log_color` | `auto`、`always` 或 `never`；推荐 `auto`。 |
 | `runtime.network_retry_count` | 额外网络重试次数，范围 `0..100`；配置 `3` 表示总共最多尝试 4 次。 |
@@ -226,6 +230,10 @@ DEBUG unfinished current TopFree torrent blocks next download hash=0123456789abc
 网络日志包含具体操作、目标种子或路径、尝试次数和耗时；普通开始/完成记录在 DEBUG，重试后恢复为 INFO，重试耗尽为 WARN。HTTP 错误附带请求方法和接口路径；错误中的 URL 不展示用户信息、查询参数或片段，保留超时等根因。初始化记录配置路径和尝试轮次，BYR 凭据来源日志只表示凭据已加载，首次读取成功前不代表会话已经验证。
 
 文件日志继续使用包含 `time=`、`level=`、`msg=` 和业务字段的结构化文本格式，保留完整时间和时区、原始容量字节数；`debug` 配置下保留完整源码位置。文件日志始终不包含 ANSI 颜色码。日志不会记录密码、BYR Cookie、qBittorrent SID、passkey 或包含 passkey 的下载 URL。
+
+文件日志按大小自动轮转：写入下一条完整日志会超过上限时，先将当前文件归档为 `btassistantbyr.log.1`，原有备份依次后移，超过保留数量的最旧备份自动删除，再创建新的 `btassistantbyr.log`。`.1` 是最新备份。默认保留当前文件和 5 份备份，正常情况下合计不超过 120 MiB；不按天数清理或压缩。旧配置无需补字段即可启用默认轮转。
+
+启动时继续追加已有日志；已有文件超过新上限时立即归档，降低备份数量时会在启动时删除超出数量的备份。历史文件不会被截断，因此升级前已过大或降低上限前生成的备份可能暂时使总量超过上述预算，随后续轮转淘汰。单条日志本身超过上限时，文件输出返回错误，不截断内容，终端仍尝试输出该事件。轮转失败会停止后续文件写入，首次错误由日志系统关闭时返回；排除故障后重启恢复。每个日志目录只供一个程序实例使用，不要同时用外部工具轮转这些文件。
 
 终端与文件共享同一事件的动态字段值。某个输出写入失败时，程序继续尝试另一个输出，并在关闭日志系统时返回首次写入错误（包括短写），因此退出时可能出现 `close logging: write file log: ...` 等错误。
 

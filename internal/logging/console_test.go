@@ -149,7 +149,7 @@ func TestConsolePropagatesWriteErrors(t *testing.T) {
 
 func TestFileRetainsRawCapacityFields(t *testing.T) {
 	var console bytes.Buffer
-	system, err := New(Options{Level: "info", Color: ColorNever, LogDir: t.TempDir(), Console: &console})
+	system, err := New(Options{MaxSizeBytes: 1 << 20, MaxBackups: 5, Level: "info", Color: ColorNever, LogDir: t.TempDir(), Console: &console})
 	if err != nil {
 		t.Fatal(err)
 	}

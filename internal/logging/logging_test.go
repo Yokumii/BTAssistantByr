@@ -14,7 +14,7 @@ func TestSystemFiltersColorsAndPersistsLogs(t *testing.T) {
 	t.Parallel()
 
 	var console bytes.Buffer
-	system, err := New(Options{
+	system, err := New(Options{MaxSizeBytes: 1 << 20, MaxBackups: 5,
 		Level:   "info",
 		Color:   ColorAlways,
 		LogDir:  t.TempDir(),
@@ -101,7 +101,7 @@ func (value *countingLogValue) LogValue() slog.Value {
 
 func TestSystemResolvesLogValuesOnceForBothOutputs(t *testing.T) {
 	var console bytes.Buffer
-	system, err := New(Options{Level: "info", Color: ColorNever, LogDir: t.TempDir(), Console: &console})
+	system, err := New(Options{MaxSizeBytes: 1 << 20, MaxBackups: 5, Level: "info", Color: ColorNever, LogDir: t.TempDir(), Console: &console})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestSystemResolvesLogValuesOnceForBothOutputs(t *testing.T) {
 
 func TestSystemReportsOutputFailureOnCloseAndContinuesOtherOutput(t *testing.T) {
 	writeErr := errors.New("console unavailable")
-	system, err := New(Options{Level: "info", Color: ColorNever, LogDir: t.TempDir(), Console: consoleTestWriter{err: writeErr}})
+	system, err := New(Options{MaxSizeBytes: 1 << 20, MaxBackups: 5, Level: "info", Color: ColorNever, LogDir: t.TempDir(), Console: consoleTestWriter{err: writeErr}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestSystemReportsOutputFailureOnCloseAndContinuesOtherOutput(t *testing.T) 
 }
 
 func TestSystemReportsShortWriteOnClose(t *testing.T) {
-	system, err := New(Options{Level: "info", Color: ColorNever, LogDir: t.TempDir(), Console: consoleTestWriter{}})
+	system, err := New(Options{MaxSizeBytes: 1 << 20, MaxBackups: 5, Level: "info", Color: ColorNever, LogDir: t.TempDir(), Console: consoleTestWriter{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestSystemReportsShortWriteOnClose(t *testing.T) {
 
 func TestSystemReportsFileWriteFailureOnClose(t *testing.T) {
 	var console bytes.Buffer
-	system, err := New(Options{Level: "info", Color: ColorNever, LogDir: t.TempDir(), Console: &console})
+	system, err := New(Options{MaxSizeBytes: 1 << 20, MaxBackups: 5, Level: "info", Color: ColorNever, LogDir: t.TempDir(), Console: &console})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestDebugLogsIncludeSourceAndAttributes(t *testing.T) {
 	t.Parallel()
 
 	var console bytes.Buffer
-	system, err := New(Options{Level: "DEBUG", Color: ColorNever, LogDir: t.TempDir(), Console: &console})
+	system, err := New(Options{MaxSizeBytes: 1 << 20, MaxBackups: 5, Level: "DEBUG", Color: ColorNever, LogDir: t.TempDir(), Console: &console})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -212,7 +212,7 @@ func TestAutoColorDoesNotColorNonTerminalWriter(t *testing.T) {
 	t.Parallel()
 
 	var console bytes.Buffer
-	system, err := New(Options{Level: "info", Color: ColorAuto, LogDir: t.TempDir(), Console: &console})
+	system, err := New(Options{MaxSizeBytes: 1 << 20, MaxBackups: 5, Level: "info", Color: ColorAuto, LogDir: t.TempDir(), Console: &console})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -233,10 +233,14 @@ func TestNewRejectsInvalidOptions(t *testing.T) {
 		options Options
 		wantErr error
 	}{
-		{name: "console", options: Options{Level: "info", Color: ColorAuto, LogDir: t.TempDir()}, wantErr: ErrConsoleRequired},
-		{name: "directory", options: Options{Level: "info", Color: ColorAuto, Console: &bytes.Buffer{}}, wantErr: ErrLogDirRequired},
-		{name: "level", options: Options{Level: "trace", Color: ColorAuto, LogDir: t.TempDir(), Console: &bytes.Buffer{}}, wantErr: ErrInvalidLevel},
-		{name: "color", options: Options{Level: "info", Color: "sometimes", LogDir: t.TempDir(), Console: &bytes.Buffer{}}, wantErr: ErrInvalidColor},
+		{name: "console", options: Options{MaxSizeBytes: 1 << 20, MaxBackups: 5, Level: "info", Color: ColorAuto, LogDir: t.TempDir()}, wantErr: ErrConsoleRequired},
+		{name: "directory", options: Options{MaxSizeBytes: 1 << 20, MaxBackups: 5, Level: "info", Color: ColorAuto, Console: &bytes.Buffer{}}, wantErr: ErrLogDirRequired},
+		{name: "level", options: Options{MaxSizeBytes: 1 << 20, MaxBackups: 5, Level: "trace", Color: ColorAuto, LogDir: t.TempDir(), Console: &bytes.Buffer{}}, wantErr: ErrInvalidLevel},
+		{name: "color", options: Options{MaxSizeBytes: 1 << 20, MaxBackups: 5, Level: "info", Color: "sometimes", LogDir: t.TempDir(), Console: &bytes.Buffer{}}, wantErr: ErrInvalidColor},
+		{name: "zero size", options: Options{Level: "info", Color: ColorNever, LogDir: t.TempDir(), Console: &bytes.Buffer{}, MaxBackups: 5}, wantErr: ErrInvalidRotation},
+		{name: "negative size", options: Options{Level: "info", Color: ColorNever, LogDir: t.TempDir(), Console: &bytes.Buffer{}, MaxSizeBytes: -1, MaxBackups: 5}, wantErr: ErrInvalidRotation},
+		{name: "zero backups", options: Options{Level: "info", Color: ColorNever, LogDir: t.TempDir(), Console: &bytes.Buffer{}, MaxSizeBytes: 1024}, wantErr: ErrInvalidRotation},
+		{name: "excessive backups", options: Options{Level: "info", Color: ColorNever, LogDir: t.TempDir(), Console: &bytes.Buffer{}, MaxSizeBytes: 1024, MaxBackups: 101}, wantErr: ErrInvalidRotation},
 	}
 	for _, test := range tests {
 		test := test
