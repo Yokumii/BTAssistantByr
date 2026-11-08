@@ -1,17 +1,22 @@
 # Build outputs
 /bin/
 /dist/
+/btassistantbyr
+/btassistantbyr.exe
 *.test
 *.out
 
 # Local runtime data
 /data/
 /logs/
+/.tmp/
 
 # Local configuration and secrets
+/config.yaml
 /config/config.yaml
 /config/*.local.yaml
 .env
+.env.*
 
 # Local agent instructions
 /AGENTS.md

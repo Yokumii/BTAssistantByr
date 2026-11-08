@@ -5,6 +5,7 @@ on:
     branches:
       - "**"
   pull_request:
+  merge_group:
   workflow_dispatch:
 
 permissions:
@@ -19,6 +20,8 @@ jobs:
     name: CI / verify
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    env:
+      GOFLAGS: -mod=readonly
 
     steps:
       - name: Check out repository
@@ -29,7 +32,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version-file: go.mod
+          go-version: "stable"
           cache-dependency-path: go.sum
 
       - name: Download and verify modules
@@ -37,13 +40,22 @@ jobs:
           go mod download
           go mod verify
 
-      - name: Run formatting, tests, vet, and build
+      - name: Run CI checks
         run: make ci
+
+      - name: Verify release packaging
+        run: |
+          output_dir="$(mktemp -d "${RUNNER_TEMP}/btassistantbyr-release-check.XXXXXX")"
+          trap 'rm -rf "${output_dir}"' EXIT
+          ./scripts/build-release.sh v0.0.0-alpha.0 "${output_dir}"
+          (cd "${output_dir}" && sha256sum --check --strict SHA256SUMS)
+          archive_count="$(find "${output_dir}" -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l | tr -d '[:space:]')"
+          test "${archive_count}" -eq 6
 
       - name: Package CI build
         run: |
           mkdir -p dist/ci
-          cp bin/btassistantbyr LICENSE README.md config/config.example.yaml dist/ci/
+          cp bin/btassistantbyr LICENSE README.md CONTRIBUTING.md RELEASING.md config/config.example.yaml dist/ci/
           tar -C dist/ci -czf dist/BTAssistantByr_ci_linux_amd64.tar.gz .
 
       - name: Upload CI build

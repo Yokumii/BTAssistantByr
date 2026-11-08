@@ -13,6 +13,13 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repository_dir="$(cd "${script_dir}/.." && pwd)"
 cd "${repository_dir}"
 
+for command_name in go tar zip; do
+  if ! command -v "${command_name}" >/dev/null 2>&1; then
+    echo "required command not found: ${command_name}" >&2
+    exit 1
+  fi
+done
+
 "${script_dir}/release-metadata.sh" "${tag}" >/dev/null
 version="${tag#v}"
 if [[ -d "${output_dir}" && -n "$(ls -A "${output_dir}")" ]]; then
@@ -41,12 +48,12 @@ for target in "${targets[@]}"; do
     binary_name+=".exe"
   fi
 
-  CGO_ENABLED=0 GOOS="${goos}" GOARCH="${goarch}" go build \
+  CGO_ENABLED=0 GOOS="${goos}" GOARCH="${goarch}" GOFLAGS="${GOFLAGS:-} -mod=readonly" go build \
     -trimpath \
     -ldflags "-s -w -X main.version=${tag}" \
     -o "${staging_dir}/${binary_name}" \
     ./cmd/btassistantbyr
-  cp LICENSE README.md config/config.example.yaml "${staging_dir}/"
+  cp LICENSE README.md CONTRIBUTING.md RELEASING.md config/config.example.yaml "${staging_dir}/"
 
   if [[ "${archive_format}" == "zip" ]]; then
     (
