@@ -12,7 +12,7 @@ client:
   save_path: ""
 
 strategy:
-  # 可选：free_time（省略时保持原策略）或 bonus（魔力净收益优先）。
+  # 可选：free_time（默认）或 bonus（按预计魔力净收益优先）。
   priority: "free_time"
   max_disk_usage_gib: 500
   # max_torrent_size_gib: 100
