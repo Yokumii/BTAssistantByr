@@ -243,7 +243,6 @@ func TestNewRejectsInvalidOptions(t *testing.T) {
 		{name: "excessive backups", options: Options{Level: "info", Color: ColorNever, LogDir: t.TempDir(), Console: &bytes.Buffer{}, MaxSizeBytes: 1024, MaxBackups: 101}, wantErr: ErrInvalidRotation},
 	}
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			_, err := New(test.options)

@@ -61,7 +61,7 @@ type Executor struct {
 	spaceCheckAttempts int
 }
 
-// SetLogger enables detailed execution logs. It must be called before Execute.
+// SetLogger sets the logger used by Execute; a nil logger disables logging.
 func (e *Executor) SetLogger(logger *slog.Logger) {
 	e.logger = logger
 }
@@ -252,15 +252,15 @@ func prepareExecutionPlan(plan Plan) (*preparedExecutionPlan, error) {
 	}
 	normalizedCandidates, err := normalizeCandidates(candidates)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidPlan, err)
+		return nil, fmt.Errorf("%w: %w", ErrInvalidPlan, err)
 	}
 	normalizedDeletions, err := normalizeManaged(deletions)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidPlan, err)
+		return nil, fmt.Errorf("%w: %w", ErrInvalidPlan, err)
 	}
 	normalizedExpired, err := normalizeManaged(plan.RemoveExpired)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidPlan, err)
+		return nil, fmt.Errorf("%w: %w", ErrInvalidPlan, err)
 	}
 	for _, torrent := range normalizedExpired {
 		if !isIncomplete(torrent) {

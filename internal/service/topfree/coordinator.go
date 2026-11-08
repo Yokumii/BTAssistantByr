@@ -48,7 +48,7 @@ type Coordinator struct {
 	now                 func() time.Time
 }
 
-// SetLogger enables structured planning logs. It must be called before RunOnce.
+// SetLogger sets the logger used by RunOnce; a nil logger disables logging.
 func (c *Coordinator) SetLogger(logger *slog.Logger) {
 	c.logger = logger
 }

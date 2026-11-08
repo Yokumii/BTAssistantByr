@@ -237,20 +237,7 @@ func sameSavePath(first, second string) bool {
 
 // ListAll returns every torrent visible to the authenticated qBittorrent session.
 func (c *Client) ListAll(ctx context.Context) ([]domain.ManagedTorrent, error) {
-	return c.list(ctx, nil)
-}
-
-// ListByTag returns torrents carrying exactly the requested qBittorrent tag.
-func (c *Client) ListByTag(ctx context.Context, tag string) ([]domain.ManagedTorrent, error) {
-	tag = strings.TrimSpace(tag)
-	if tag == "" {
-		return nil, ErrTagRequired
-	}
-	return c.list(ctx, url.Values{"tag": {tag}})
-}
-
-func (c *Client) list(ctx context.Context, query url.Values) ([]domain.ManagedTorrent, error) {
-	response, err := c.request(ctx, http.MethodGet, "api/v2/torrents/info", query, "", nil)
+	response, err := c.request(ctx, http.MethodGet, "api/v2/torrents/info", nil, "", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -360,16 +347,18 @@ func (c *Client) Add(ctx context.Context, addRequest port.AddTorrentRequest) err
 
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-	fields := map[string]string{
-		"urls":     strings.TrimSpace(addRequest.SourceURL),
-		"savepath": addRequest.SavePath,
-		"tags":     tags,
-	}
-	for _, key := range []string{"urls", "savepath", "tags"} {
-		if fields[key] == "" && key != "urls" {
+	for _, field := range []struct {
+		key   string
+		value string
+	}{
+		{key: "urls", value: strings.TrimSpace(addRequest.SourceURL)},
+		{key: "savepath", value: addRequest.SavePath},
+		{key: "tags", value: tags},
+	} {
+		if field.value == "" {
 			continue
 		}
-		if err := writer.WriteField(key, fields[key]); err != nil {
+		if err := writer.WriteField(field.key, field.value); err != nil {
 			return fmt.Errorf("encode qBittorrent add request: %w", err)
 		}
 	}

@@ -184,7 +184,7 @@ func BuildBonusPlanWithDiskSpace(
 			plan.Skipped = append(plan.Skipped, SkippedCandidate{Candidate: candidate, Reason: SkipNoBonusGain})
 			continue
 		}
-		// Queued is already ordered by the legacy priority, which breaks equal gains.
+		// Queued is ordered by free_time; stable ordering breaks equal gains without changing that priority.
 		if best != nil && gain <= bestGain {
 			continue
 		}

@@ -164,7 +164,6 @@ func TestClientRetriesBYRResponseBodyTimeouts(t *testing.T) {
 		},
 	}
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -470,5 +469,8 @@ func TestClientDownloadURLRejectsInvalidTorrentID(t *testing.T) {
 	_, err = client.DownloadURL(context.Background(), "all")
 	if !errors.Is(err, ErrInvalidTorrentID) {
 		t.Fatalf("error = %v, want ErrInvalidTorrentID", err)
+	}
+	if _, err := client.TorrentHash(context.Background(), ""); !errors.Is(err, ErrInvalidTorrentID) {
+		t.Fatalf("TorrentHash() error = %v, want ErrInvalidTorrentID", err)
 	}
 }

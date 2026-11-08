@@ -87,13 +87,13 @@ func Load(path string) (Config, error) {
 
 	file, err := os.Open(path)
 	if err != nil {
-		return Config{}, fmt.Errorf("%w: %v", ErrReadConfig, err)
+		return Config{}, fmt.Errorf("%w: %w", ErrReadConfig, err)
 	}
 	defer file.Close()
 
 	contents, err := io.ReadAll(io.LimitReader(file, maxConfigSize+1))
 	if err != nil {
-		return Config{}, fmt.Errorf("%w: %v", ErrReadConfig, err)
+		return Config{}, fmt.Errorf("%w: %w", ErrReadConfig, err)
 	}
 	if len(contents) > maxConfigSize {
 		return Config{}, ErrConfigTooLarge
@@ -103,12 +103,12 @@ func Load(path string) (Config, error) {
 	decoder := yaml.NewDecoder(bytes.NewReader(contents))
 	decoder.KnownFields(true)
 	if err := decoder.Decode(&raw); err != nil {
-		return Config{}, fmt.Errorf("%w: %v", ErrInvalidConfig, err)
+		return Config{}, fmt.Errorf("%w: %w", ErrInvalidConfig, err)
 	}
 	var extra any
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
 		if err != nil {
-			return Config{}, fmt.Errorf("%w: %v", ErrInvalidConfig, err)
+			return Config{}, fmt.Errorf("%w: %w", ErrInvalidConfig, err)
 		}
 		return Config{}, fmt.Errorf("%w: multiple YAML documents are not supported", ErrInvalidConfig)
 	}

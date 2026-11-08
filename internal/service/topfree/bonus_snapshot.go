@@ -2,6 +2,7 @@ package topfree
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -29,7 +30,7 @@ type BonusSnapshot struct {
 // EnableBonusPriority selects the opt-in strategy before the coordinator runs.
 func (c *Coordinator) EnableBonusPriority(source port.BonusTracker, interval time.Duration) error {
 	if source == nil || interval <= 0 {
-		return fmt.Errorf("%w: bonus source and positive refresh interval required", port.ErrInvalidTrackerSnapshot)
+		return errors.New("bonus priority requires a tracker source and a positive refresh interval")
 	}
 	c.bonusSource = source
 	c.bonusInterval = interval

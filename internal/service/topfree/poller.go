@@ -41,7 +41,7 @@ type Poller struct {
 	waitUntil          func(context.Context, time.Time) error
 }
 
-// SetLogger enables structured lifecycle logging. It must be called before Run.
+// SetLogger sets the logger used by Run; a nil logger disables logging.
 func (p *Poller) SetLogger(logger *slog.Logger) {
 	p.logger = logger
 }

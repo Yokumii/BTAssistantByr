@@ -1,3 +1,4 @@
+// Package topfree coordinates periodic discovery and pure TopFree capacity planning.
 package topfree
 
 import (
@@ -506,7 +507,11 @@ func physicallyReleasable(torrent domain.ManagedTorrent, disk *diskCapacity) int
 }
 
 func availableAfterAllCleanup(maximum, usage, physicalFreeBytes int64, stale []domain.ManagedTorrent, disk *diskCapacity) int64 {
-	logical := availableAfterCleanup(maximum, usage, sumManagedSizes(stale))
+	reclaimable := int64(0)
+	for _, torrent := range stale {
+		reclaimable += torrent.SizeBytes
+	}
+	logical := availableAfterCleanup(maximum, usage, reclaimable)
 	if disk == nil {
 		return logical
 	}
@@ -547,14 +552,6 @@ func sameDiskPath(first, second string) bool {
 		return value
 	}
 	return normalize(first) == normalize(second)
-}
-
-func sumManagedSizes(torrents []domain.ManagedTorrent) int64 {
-	total := int64(0)
-	for _, torrent := range torrents {
-		total += torrent.SizeBytes
-	}
-	return total
 }
 
 func hasTag(tags []string, expected string) bool {

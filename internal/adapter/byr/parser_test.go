@@ -71,7 +71,6 @@ func TestPageParsersPreserveBodyReadTimeout(t *testing.T) {
 		{name: "passkey", parse: func() error { _, err := parsePasskey(deadlineReader{}); return err }, wantErr: ErrPasskeyNotFound},
 	}
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -106,7 +105,6 @@ func TestParseSizeBytes(t *testing.T) {
 		{input: "1 TiB", want: 1 << 40},
 	}
 	for _, test := range tests {
-		test := test
 		t.Run(test.input, func(t *testing.T) {
 			t.Parallel()
 			got, err := parseSizeBytes(test.input)

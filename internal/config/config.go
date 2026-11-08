@@ -54,7 +54,7 @@ const (
 	DefaultLogMaxBackups = 5
 )
 
-// Runtime contains paths and logging limits for generated application data.
+// Runtime contains paths and logging limits for application data.
 type Runtime struct {
 	DataDir  string
 	LogDir   string

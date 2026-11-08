@@ -57,9 +57,6 @@ func TestAuthenticatorLogin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("login: %v", err)
 	}
-	if credential.AccessToken != "api-token" {
-		t.Fatalf("unexpected access token: %q", credential.AccessToken)
-	}
 	if credential.AuthToken != "cookie-token" {
 		t.Fatalf("unexpected auth token: %q", credential.AuthToken)
 	}
@@ -130,7 +127,7 @@ func TestAuthenticatorLoginRejectsMissingInput(t *testing.T) {
 	}
 }
 
-func TestAuthenticatorLoginRejectsResponseWithoutToken(t *testing.T) {
+func TestAuthenticatorLoginUsesCookieCredentialsWithoutAPIToken(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
@@ -146,9 +143,12 @@ func TestAuthenticatorLoginRejectsResponseWithoutToken(t *testing.T) {
 		t.Fatalf("create authenticator: %v", err)
 	}
 
-	_, err = authenticator.Login(context.Background(), "alice", "wrong-password")
-	if !errors.Is(err, ErrAuthenticationFailed) {
-		t.Fatalf("unexpected error: got %v, want %v", err, ErrAuthenticationFailed)
+	credential, err := authenticator.Login(context.Background(), "alice", "secret")
+	if err != nil {
+		t.Fatalf("Login() error = %v", err)
+	}
+	if credential.AuthToken != "cookie-token" || credential.SessionID != "session-token" {
+		t.Fatalf("unexpected credential: %+v", credential)
 	}
 }
 

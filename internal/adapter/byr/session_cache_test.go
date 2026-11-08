@@ -1,12 +1,10 @@
 package byr
 
 import (
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 )
 
@@ -76,28 +74,5 @@ func TestSessionCacheRejectsCorruption(t *testing.T) {
 	_, _, err = cache.Load("https://byr.pt", "alice")
 	if !errors.Is(err, ErrInvalidSessionCache) {
 		t.Fatalf("Load() error = %v, want ErrInvalidSessionCache", err)
-	}
-}
-
-func TestSessionCacheDoesNotPersistAccessToken(t *testing.T) {
-	t.Parallel()
-
-	cache, err := NewSessionCache(t.TempDir())
-	if err != nil {
-		t.Fatalf("NewSessionCache() error = %v", err)
-	}
-	credential := Credential{AccessToken: "api-access-token", AuthToken: "auth-token", SessionID: "session-id"}
-	if err := cache.Save("https://byr.pt", "alice", credential); err != nil {
-		t.Fatalf("Save() error = %v", err)
-	}
-	contents, err := os.ReadFile(cache.Path())
-	if err != nil {
-		t.Fatalf("ReadFile() error = %v", err)
-	}
-	if string(contents) == "" || json.Valid(contents) == false {
-		t.Fatalf("cache is not valid JSON: %q", contents)
-	}
-	if strings.Contains(string(contents), "api-access-token") {
-		t.Fatal("cache persisted API access token")
 	}
 }

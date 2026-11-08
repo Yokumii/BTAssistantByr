@@ -173,7 +173,7 @@ func (c *Client) ListTopFree(ctx context.Context) ([]domain.Candidate, error) {
 // TorrentHash returns a torrent hash, using an in-memory cache after the first request.
 func (c *Client) TorrentHash(ctx context.Context, torrentID domain.TorrentID) (domain.TorrentHash, error) {
 	if strings.TrimSpace(string(torrentID)) == "" {
-		return "", ErrTorrentHashNotFound
+		return "", ErrInvalidTorrentID
 	}
 
 	c.hashMu.RLock()

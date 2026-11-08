@@ -1,3 +1,4 @@
+// Package byr implements access to the BYR tracker.
 package byr
 
 import (
@@ -43,9 +44,8 @@ var (
 
 // Credential is the session credential issued by BYR after login.
 type Credential struct {
-	AccessToken string
-	AuthToken   string
-	SessionID   string
+	AuthToken string
+	SessionID string
 }
 
 // NewCredential validates an existing BYR auth token.
@@ -93,7 +93,7 @@ func NewAuthenticatorWithProxy(baseURL, proxyURL string, httpClient *http.Client
 	}, nil
 }
 
-// Login obtains BYR API and cookie credentials.
+// Login authenticates and obtains BYR session cookies.
 func (a *Authenticator) Login(ctx context.Context, username, password string) (_ Credential, resultErr error) {
 	defer func() {
 		if resultErr != nil {
@@ -151,9 +151,6 @@ func (a *Authenticator) Login(ctx context.Context, username, password string) (_
 	var result struct {
 		Success bool `json:"success"`
 		Code    int  `json:"code"`
-		Data    struct {
-			AuthToken string `json:"auth_token"`
-		} `json:"data"`
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, maxResponseSize)).Decode(&result); err != nil {
 		return Credential{}, fmt.Errorf("%w: %w", ErrInvalidResponse, err)
@@ -161,11 +158,7 @@ func (a *Authenticator) Login(ctx context.Context, username, password string) (_
 	if !result.Success || result.Code != http.StatusOK {
 		return Credential{}, fmt.Errorf("%w: API success=%t code=%d", ErrAuthenticationFailed, result.Success, result.Code)
 	}
-	if strings.TrimSpace(result.Data.AuthToken) == "" {
-		return Credential{}, fmt.Errorf("%w: API auth token missing", ErrAuthenticationFailed)
-	}
-
-	credential := Credential{AccessToken: strings.TrimSpace(result.Data.AuthToken)}
+	credential := Credential{}
 	for _, cookie := range response.Cookies() {
 		switch cookie.Name {
 		case authTokenCookie:

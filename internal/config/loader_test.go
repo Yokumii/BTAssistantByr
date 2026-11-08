@@ -127,7 +127,6 @@ func TestLoadRejectsInvalidConfiguration(t *testing.T) {
 		{name: "excessive network retry count", content: strings.Replace(validYAML, "network_retry_count: 3", "network_retry_count: 101", 1)},
 	}
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			_, err := Load(writeConfig(t, test.content))
@@ -211,8 +210,8 @@ func TestLoadRejectsMissingPath(t *testing.T) {
 	if _, err := Load(" "); !errors.Is(err, ErrPathRequired) {
 		t.Fatalf("Load() error = %v, want ErrPathRequired", err)
 	}
-	if _, err := Load(filepath.Join(t.TempDir(), "missing.yaml")); !errors.Is(err, ErrReadConfig) {
-		t.Fatalf("Load() error = %v, want ErrReadConfig", err)
+	if _, err := Load(filepath.Join(t.TempDir(), "missing.yaml")); !errors.Is(err, ErrReadConfig) || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Load() error = %v, want ErrReadConfig and os.ErrNotExist", err)
 	}
 }
 
