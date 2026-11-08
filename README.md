@@ -34,6 +34,8 @@ BTAssistantByr 是一个面向 BYRBT 用户的 TopFree 自动管理工具。它�
 
 从 [GitHub Releases](https://github.com/Yokumii/BTAssistantByr/releases) 下载与系统和架构匹配的压缩包并解压。Windows 使用 `.zip`，Linux 和 macOS 使用 `.tar.gz`。
 
+Release 同时提供 `SHA256SUMS`，可用来核对下载文件的完整性。带 `alpha`、`beta` 或 `rc` 后缀的版本为预发布版；稳定使用请选择正式版。
+
 Release 压缩包内已经包含可执行文件和 `config.example.yaml`。先复制配置：
 
 Linux/macOS：
