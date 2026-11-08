@@ -5,6 +5,8 @@ on:
     branches:
       - "**"
   pull_request:
+  merge_group:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -16,17 +18,21 @@ concurrency:
 jobs:
   verify:
     name: CI / verify
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
+    env:
+      GOFLAGS: -mod=readonly
 
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version-file: go.mod
+          go-version: "stable"
           cache-dependency-path: go.sum
 
       - name: Download and verify modules
@@ -34,5 +40,30 @@ jobs:
           go mod download
           go mod verify
 
-      - name: Run formatting, tests, vet, and build
+      - name: Run CI checks
         run: make ci
+
+      - name: Verify release packaging
+        run: |
+          output_dir="$(mktemp -d "${RUNNER_TEMP}/btassistantbyr-release-check.XXXXXX")"
+          trap 'rm -rf "${output_dir}"' EXIT
+          ./scripts/build-release.sh v0.0.0-alpha.0 "${output_dir}"
+          (cd "${output_dir}" && sha256sum --check --strict SHA256SUMS)
+          archive_count="$(find "${output_dir}" -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l | tr -d '[:space:]')"
+          test "${archive_count}" -eq 6
+
+      - name: Package CI build
+        run: |
+          mkdir -p dist/ci
+          cp bin/btassistantbyr LICENSE README.md CONTRIBUTING.md RELEASING.md config/config.example.yaml dist/ci/
+          tar -C dist/ci -czf dist/BTAssistantByr_ci_linux_amd64.tar.gz .
+
+      - name: Upload CI build
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: BTAssistantByr-ci-linux-amd64
+          path: dist/BTAssistantByr_ci_linux_amd64.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+          overwrite: true

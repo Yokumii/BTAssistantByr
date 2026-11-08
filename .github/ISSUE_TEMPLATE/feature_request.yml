@@ -2,11 +2,6 @@ name: 功能建议
 description: 建议新的能力或现有行为改进
 title: "[Feature]: "
 body:
-  - type: markdown
-    attributes:
-      value: |
-        感谢建议。提交前请先搜索已有 Issue，避免重复提议。
-
   - type: checkboxes
     id: preflight
     attributes:

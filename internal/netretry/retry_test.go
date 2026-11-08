@@ -1,14 +1,60 @@
 package netretry
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Yokumii/BTAssistantByr/internal/domain"
 )
+
+func TestPolicyLogsRecoveryAndTargetContext(t *testing.T) {
+	var logs bytes.Buffer
+	policy := Policy{Retries: 1, Logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))}
+	attempts := 0
+	err := policy.withLogAttrs("torrent_id", "42").Do(context.Background(), "read publication metadata", func() error {
+		attempts++
+		if attempts == 1 {
+			return Transient(errors.New("temporary"))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"network operation started", "network request failed; retrying", "network operation completed", "torrent_id=42", "attempt=2", "max_attempts=2", "duration="} {
+		if !strings.Contains(logs.String(), expected) {
+			t.Errorf("missing %q in %s", expected, logs.String())
+		}
+	}
+	if strings.Contains(logs.String(), "retries exhausted") {
+		t.Errorf("successful operation logged exhaustion: %s", logs.String())
+	}
+}
+
+func TestPolicyLogsFinalExhaustion(t *testing.T) {
+	var logs bytes.Buffer
+	policy := Policy{Retries: 1, Logger: slog.New(slog.NewTextHandler(&logs, nil))}
+	err := policy.withLogAttrs("hashes", []domain.TorrentHash{"fixture-hash"}).Do(context.Background(), "delete torrents", func() error {
+		return Transient(errors.New("temporary"))
+	})
+	if !IsTransient(err) {
+		t.Fatalf("classification lost: %v", err)
+	}
+	for _, expected := range []string{"network operation retries exhausted", "hashes=[fixture-hash]", "attempt=2", "max_attempts=2", "error="} {
+		if !strings.Contains(logs.String(), expected) {
+			t.Errorf("missing %q in %s", expected, logs.String())
+		}
+	}
+	if strings.Contains(logs.String(), "network operation completed") {
+		t.Errorf("failed operation logged completion: %s", logs.String())
+	}
+}
 
 func TestPolicyRetriesTransientFailure(t *testing.T) {
 	t.Parallel()

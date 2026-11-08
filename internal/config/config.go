@@ -14,6 +14,15 @@ type Config struct {
 	Strategy  Strategy
 	Execution Execution
 	Runtime   Runtime
+	Resend    *Resend
+}
+
+// Resend enables execution emails only when explicitly configured.
+type Resend struct {
+	APIKey  string
+	From    string
+	To      []string
+	Timeout time.Duration
 }
 
 // Tracker contains BYR connection settings.
@@ -35,6 +44,8 @@ type Client struct {
 
 // Strategy contains TopFree strategy settings.
 type Strategy struct {
+	// Priority is free_time (the documented default) or bonus.
+	Priority            string
 	MaxDiskUsageBytes   int64
 	MaxTorrentSizeBytes int64
 	MinFreeSpaceBytes   int64
@@ -47,11 +58,19 @@ type Execution struct {
 	Mode domain.ExecutionMode
 }
 
-// Runtime contains paths used for generated application data.
+const (
+	DefaultLogMaxSizeMiB = int64(20)
+	DefaultLogMaxBackups = 5
+)
+
+// Runtime contains paths and logging limits for application data.
 type Runtime struct {
-	DataDir           string
-	LogDir            string
-	LogLevel          string
-	LogColor          string
+	DataDir  string
+	LogDir   string
+	LogLevel string
+	LogColor string
+	// LogMaxSizeBytes and LogMaxBackups default to 20 MiB and 5 in Load.
+	LogMaxSizeBytes   int64
+	LogMaxBackups     int
 	NetworkRetryCount int
 }

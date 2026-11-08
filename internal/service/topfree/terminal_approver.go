@@ -87,6 +87,20 @@ func approvalSummary(plan Plan) string {
 	fmt.Fprintf(&summary, "- 等待队列：%d\n", len(plan.Queued))
 	fmt.Fprintf(&summary, "- 下载种子：%d\n", len(plan.Downloads))
 	fmt.Fprintf(&summary, "- 预计磁盘占用：%.2f GiB\n", bytesAsGiB(plan.ProjectedDiskUsageBytes))
+	if bonus := plan.Bonus; bonus != nil {
+		fmt.Fprintf(&summary, "- 魔力快照时间：%s\n", bonus.ObservedAt.Format("2006-01-02 15:04:05Z07:00"))
+		fmt.Fprintf(&summary, "- 魔力计划有效至：%s（批准超时需重新规划）\n", bonus.ValidUntil.Format("2006-01-02 15:04:05Z07:00"))
+		fmt.Fprintf(&summary, "- 网页 A：%.3f；按当前做种清单估算 A：%.3f → %.3f\n", bonus.ReportedA, bonus.BeforeA, bonus.AfterA)
+		fmt.Fprintf(&summary, "- 新增 A：%.3f；删除损失 A：%.3f\n", bonus.AddedA, bonus.RemovedA)
+		fmt.Fprintf(&summary, "- 容量替换净增益：%+.3f 魔力/小时（以必需的失效清理后为基线）\n", bonus.ReplacementGainPerHour)
+		fmt.Fprintf(&summary, "- 预计魔力/小时：%.3f → %.3f（净变化 %+.3f，假设新种完成下载并持续做种）\n", bonus.BeforePerHour, bonus.AfterPerHour, bonus.NetPerHour)
+	}
+	for _, hash := range plan.BonusUnavailable {
+		fmt.Fprintf(&summary, "  不参与容量回收 hash=%s reason=bonus_metadata_unavailable\n", hash)
+	}
+	for _, skipped := range plan.Skipped {
+		fmt.Fprintf(&summary, "  跳过 id=%s reason=%s\n", skipped.Candidate.ID, skipped.Reason)
+	}
 	if plan.EffectiveSavePath != "" {
 		fmt.Fprintf(&summary, "- 下载路径：%s\n", plan.EffectiveSavePath)
 		fmt.Fprintf(&summary, "- 检测可用空间：%.2f GiB\n", bytesAsGiB(plan.InitialFreeSpaceBytes))

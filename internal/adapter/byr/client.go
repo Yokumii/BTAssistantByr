@@ -40,8 +40,9 @@ type CredentialRefresh func(context.Context) (Credential, error)
 
 // Client accesses authenticated BYR tracker pages.
 type Client struct {
-	baseURL    *url.URL
-	httpClient *http.Client
+	metadataCache map[domain.TorrentID]domain.TorrentMetadata
+	baseURL       *url.URL
+	httpClient    *http.Client
 
 	credentialMu         sync.RWMutex
 	credential           Credential
@@ -172,7 +173,7 @@ func (c *Client) ListTopFree(ctx context.Context) ([]domain.Candidate, error) {
 // TorrentHash returns a torrent hash, using an in-memory cache after the first request.
 func (c *Client) TorrentHash(ctx context.Context, torrentID domain.TorrentID) (domain.TorrentHash, error) {
 	if strings.TrimSpace(string(torrentID)) == "" {
-		return "", ErrTorrentHashNotFound
+		return "", ErrInvalidTorrentID
 	}
 
 	c.hashMu.RLock()
@@ -219,7 +220,12 @@ func (c *Client) get(ctx context.Context, relativePath string, query url.Values)
 	}
 }
 
-func (c *Client) getWithCredential(ctx context.Context, relativePath string, query url.Values, credential Credential) (*http.Response, error) {
+func (c *Client) getWithCredential(ctx context.Context, relativePath string, query url.Values, credential Credential) (_ *http.Response, resultErr error) {
+	defer func() {
+		if resultErr != nil {
+			resultErr = fmt.Errorf("BYR GET /%s: %w", relativePath, resultErr)
+		}
+	}()
 	endpoint := *c.baseURL
 	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/" + relativePath
 	endpoint.RawPath = ""
@@ -238,7 +244,7 @@ func (c *Client) getWithCredential(ctx context.Context, relativePath string, que
 
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("send BYR request: %w", err)
+		return nil, netretry.RequestError("send BYR request", err)
 	}
 	if response.StatusCode >= http.StatusMultipleChoices && response.StatusCode < http.StatusBadRequest {
 		response.Body.Close()

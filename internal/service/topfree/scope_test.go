@@ -45,7 +45,6 @@ func TestTagsInManagementScope(t *testing.T) {
 		{name: "authorized deletion and manual tags", tags: []string{DeleteTag, "keep"}},
 	}
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			if got := tagsInManagementScope(test.tags); got != test.want {

@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net/mail"
 	"net/url"
 	"os"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Yokumii/BTAssistantByr/internal/domain"
 	"go.yaml.in/yaml/v3"
@@ -18,6 +20,7 @@ import (
 const (
 	maxConfigSize = 1 << 20
 	gib           = int64(1 << 30)
+	mib           = int64(1 << 20)
 )
 
 var (
@@ -37,6 +40,14 @@ type yamlConfig struct {
 	Strategy  yamlStrategy  `yaml:"strategy"`
 	Execution yamlExecution `yaml:"execution"`
 	Runtime   yamlRuntime   `yaml:"runtime"`
+	Resend    *yamlResend   `yaml:"resend"`
+}
+
+type yamlResend struct {
+	APIKey  string   `yaml:"api_key"`
+	From    string   `yaml:"from"`
+	To      []string `yaml:"to"`
+	Timeout string   `yaml:"timeout"`
 }
 
 type yamlTracker struct {
@@ -55,11 +66,12 @@ type yamlClient struct {
 }
 
 type yamlStrategy struct {
-	MaxDiskUsageGiB    int64  `yaml:"max_disk_usage_gib"`
-	MaxTorrentSizeGiB  *int64 `yaml:"max_torrent_size_gib"`
-	MinFreeSpaceGiB    int64  `yaml:"min_free_space_gib"`
-	RefreshInterval    string `yaml:"refresh_interval"`
-	QueueCheckInterval string `yaml:"queue_check_interval"`
+	Priority           *string `yaml:"priority"`
+	MaxDiskUsageGiB    int64   `yaml:"max_disk_usage_gib"`
+	MaxTorrentSizeGiB  *int64  `yaml:"max_torrent_size_gib"`
+	MinFreeSpaceGiB    int64   `yaml:"min_free_space_gib"`
+	RefreshInterval    string  `yaml:"refresh_interval"`
+	QueueCheckInterval string  `yaml:"queue_check_interval"`
 }
 
 type yamlExecution struct {
@@ -71,6 +83,8 @@ type yamlRuntime struct {
 	LogDir            string `yaml:"log_dir"`
 	LogLevel          string `yaml:"log_level"`
 	LogColor          string `yaml:"log_color"`
+	LogMaxSizeMiB     *int64 `yaml:"log_max_size_mib"`
+	LogMaxBackups     *int   `yaml:"log_max_backups"`
 	NetworkRetryCount *int   `yaml:"network_retry_count"`
 }
 
@@ -83,13 +97,13 @@ func Load(path string) (Config, error) {
 
 	file, err := os.Open(path)
 	if err != nil {
-		return Config{}, fmt.Errorf("%w: %v", ErrReadConfig, err)
+		return Config{}, fmt.Errorf("%w: %w", ErrReadConfig, err)
 	}
 	defer file.Close()
 
 	contents, err := io.ReadAll(io.LimitReader(file, maxConfigSize+1))
 	if err != nil {
-		return Config{}, fmt.Errorf("%w: %v", ErrReadConfig, err)
+		return Config{}, fmt.Errorf("%w: %w", ErrReadConfig, err)
 	}
 	if len(contents) > maxConfigSize {
 		return Config{}, ErrConfigTooLarge
@@ -99,12 +113,12 @@ func Load(path string) (Config, error) {
 	decoder := yaml.NewDecoder(bytes.NewReader(contents))
 	decoder.KnownFields(true)
 	if err := decoder.Decode(&raw); err != nil {
-		return Config{}, fmt.Errorf("%w: %v", ErrInvalidConfig, err)
+		return Config{}, fmt.Errorf("%w: %w", ErrInvalidConfig, err)
 	}
 	var extra any
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
 		if err != nil {
-			return Config{}, fmt.Errorf("%w: %v", ErrInvalidConfig, err)
+			return Config{}, fmt.Errorf("%w: %w", ErrInvalidConfig, err)
 		}
 		return Config{}, fmt.Errorf("%w: multiple YAML documents are not supported", ErrInvalidConfig)
 	}
@@ -113,6 +127,17 @@ func Load(path string) (Config, error) {
 }
 
 func validate(raw yamlConfig) (Config, error) {
+	resend, err := validateResend(raw.Resend)
+	if err != nil {
+		return Config{}, err
+	}
+	priority := "free_time"
+	if raw.Strategy.Priority != nil {
+		priority = strings.ToLower(strings.TrimSpace(*raw.Strategy.Priority))
+		if !oneOf(priority, "free_time", "bonus") {
+			return Config{}, fieldError("strategy.priority", "must be free_time or bonus")
+		}
+	}
 	raw.Tracker.BaseURL = strings.TrimSpace(raw.Tracker.BaseURL)
 	raw.Tracker.ProxyURL = strings.TrimSpace(raw.Tracker.ProxyURL)
 	raw.Tracker.Username = strings.TrimSpace(raw.Tracker.Username)
@@ -205,8 +230,23 @@ func validate(raw yamlConfig) (Config, error) {
 	if !oneOf(raw.Runtime.LogColor, "auto", "always", "never") {
 		return Config{}, fieldError("runtime.log_color", "must be auto, always, or never")
 	}
+	logMaxSizeMiB := DefaultLogMaxSizeMiB
+	if raw.Runtime.LogMaxSizeMiB != nil {
+		logMaxSizeMiB = *raw.Runtime.LogMaxSizeMiB
+	}
+	if logMaxSizeMiB <= 0 || logMaxSizeMiB > math.MaxInt64/mib {
+		return Config{}, fieldError("runtime.log_max_size_mib", "must be positive and must not overflow bytes")
+	}
+	logMaxBackups := DefaultLogMaxBackups
+	if raw.Runtime.LogMaxBackups != nil {
+		logMaxBackups = *raw.Runtime.LogMaxBackups
+	}
+	if logMaxBackups < 1 || logMaxBackups > 100 {
+		return Config{}, fieldError("runtime.log_max_backups", "must be between 1 and 100")
+	}
 
 	return Config{
+		Resend: resend,
 		Tracker: Tracker{
 			BaseURL:  raw.Tracker.BaseURL,
 			ProxyURL: raw.Tracker.ProxyURL,
@@ -221,6 +261,7 @@ func validate(raw yamlConfig) (Config, error) {
 			SavePath: raw.Client.SavePath,
 		},
 		Strategy: Strategy{
+			Priority:            priority,
 			MaxDiskUsageBytes:   raw.Strategy.MaxDiskUsageGiB * gib,
 			MaxTorrentSizeBytes: maxTorrentSizeBytes,
 			MinFreeSpaceBytes:   raw.Strategy.MinFreeSpaceGiB * gib,
@@ -233,9 +274,42 @@ func validate(raw yamlConfig) (Config, error) {
 			LogDir:            raw.Runtime.LogDir,
 			LogLevel:          raw.Runtime.LogLevel,
 			LogColor:          raw.Runtime.LogColor,
+			LogMaxSizeBytes:   logMaxSizeMiB * mib,
+			LogMaxBackups:     logMaxBackups,
 			NetworkRetryCount: *raw.Runtime.NetworkRetryCount,
 		},
 	}, nil
+}
+
+func validateResend(raw *yamlResend) (*Resend, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	key := strings.TrimSpace(raw.APIKey)
+	if key == "" || strings.IndexFunc(key, unicode.IsSpace) >= 0 {
+		return nil, fieldError("resend.api_key", "must be a nonempty token without whitespace")
+	}
+	from := strings.TrimSpace(raw.From)
+	if _, err := mail.ParseAddress(from); err != nil || strings.ContainsAny(from, "\r\n") {
+		return nil, fieldError("resend.from", "must be a valid email address")
+	}
+	if len(raw.To) == 0 || len(raw.To) > 50 {
+		return nil, fieldError("resend.to", "must contain between 1 and 50 email addresses")
+	}
+	to := make([]string, len(raw.To))
+	for i, value := range raw.To {
+		value = strings.TrimSpace(value)
+		address, err := mail.ParseAddress(value)
+		if err != nil || address.Address != value || strings.ContainsAny(value, "\r\n") {
+			return nil, fieldError("resend.to", "must contain plain email addresses")
+		}
+		to[i] = value
+	}
+	timeout, err := time.ParseDuration(strings.TrimSpace(raw.Timeout))
+	if err != nil || timeout <= 0 {
+		return nil, fieldError("resend.timeout", "must be a positive Go duration")
+	}
+	return &Resend{APIKey: key, From: from, To: to, Timeout: timeout}, nil
 }
 
 func oneOf(value string, allowed ...string) bool {

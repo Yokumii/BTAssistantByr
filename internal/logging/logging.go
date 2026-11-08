@@ -2,7 +2,6 @@
 package logging
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -10,7 +9,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 )
 
 const FileName = "btassistantbyr.log"
@@ -26,21 +27,26 @@ var (
 	ErrLogDirRequired  = errors.New("log directory is required")
 	ErrInvalidLevel    = errors.New("invalid log level")
 	ErrInvalidColor    = errors.New("invalid log color mode")
+	ErrInvalidRotation = errors.New("log maximum size must be positive and backups must be between 1 and 100")
 )
 
-// Options controls both console and persistent file logs.
+// Options controls both console and persistent file logs. MaxSizeBytes must be
+// positive; MaxBackups must be between 1 and 100. The config loader supplies defaults.
 type Options struct {
-	Level   string
-	Color   string
-	LogDir  string
-	Console io.Writer
+	Level        string
+	Color        string
+	LogDir       string
+	Console      io.Writer
+	MaxSizeBytes int64
+	MaxBackups   int
 }
 
 // System owns the logger and its persistent file.
 type System struct {
 	logger   *slog.Logger
-	file     *os.File
+	file     *rotatingFile
 	filePath string
+	writes   *writeFailure
 }
 
 // New creates a level-filtered console logger and an ANSI-free file logger.
@@ -60,12 +66,15 @@ func New(options Options) (*System, error) {
 	if err != nil {
 		return nil, err
 	}
+	if options.MaxSizeBytes <= 0 || options.MaxBackups < 1 || options.MaxBackups > 100 {
+		return nil, ErrInvalidRotation
+	}
 
 	if err := os.MkdirAll(options.LogDir, 0o750); err != nil {
 		return nil, fmt.Errorf("create log directory: %w", err)
 	}
 	filePath := filepath.Join(options.LogDir, FileName)
-	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640)
+	file, err := newRotatingFile(filePath, options.MaxSizeBytes, options.MaxBackups)
 	if err != nil {
 		return nil, fmt.Errorf("open log file: %w", err)
 	}
@@ -74,16 +83,14 @@ func New(options Options) (*System, error) {
 		AddSource: level == slog.LevelDebug,
 		Level:     level,
 	}
-	consoleOutput := options.Console
-	if color {
-		consoleOutput = colorWriter{writer: options.Console}
-	}
-	consoleHandler := slog.NewTextHandler(consoleOutput, handlerOptions)
-	fileHandler := slog.NewTextHandler(file, handlerOptions)
+	writes := &writeFailure{}
+	consoleHandler := newConsoleHandler(logWriter{writer: options.Console, name: "console", failure: writes}, level, color)
+	fileHandler := slog.NewTextHandler(logWriter{writer: file, name: "file", failure: writes}, handlerOptions)
 	return &System{
 		logger:   slog.New(fanoutHandler{consoleHandler, fileHandler}),
 		file:     file,
 		filePath: filePath,
+		writes:   writes,
 	}, nil
 }
 
@@ -97,15 +104,47 @@ func (system *System) FilePath() string {
 	return system.filePath
 }
 
-// Close flushes and closes the persistent log file.
+// Close reports the first output failure as well as flush and close errors.
 func (system *System) Close() error {
 	if system.file == nil {
-		return nil
+		return system.writes.err()
 	}
-	syncErr := system.file.Sync()
 	closeErr := system.file.Close()
-	system.file = nil
-	return errors.Join(syncErr, closeErr)
+	return errors.Join(system.writes.err(), closeErr)
+}
+
+// slog discards Handler errors, so keep the first write failure for Close.
+type writeFailure struct {
+	mu    sync.Mutex
+	first error
+}
+
+func (failure *writeFailure) err() error {
+	failure.mu.Lock()
+	defer failure.mu.Unlock()
+	return failure.first
+}
+
+type logWriter struct {
+	writer  io.Writer
+	name    string
+	failure *writeFailure
+}
+
+func (writer logWriter) Write(payload []byte) (int, error) {
+	written, err := writer.writer.Write(payload)
+	if err == nil && written != len(payload) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		err = fmt.Errorf("write %s log: %w", writer.name, err)
+		writer.failure.mu.Lock()
+		if writer.failure.first == nil {
+			writer.failure.first = err
+		}
+		writer.failure.mu.Unlock()
+	}
+	return written, err
 }
 
 func parseLevel(value string) (slog.Level, error) {
@@ -153,21 +192,45 @@ func (handler fanoutHandler) Enabled(ctx context.Context, level slog.Level) bool
 }
 
 func (handler fanoutHandler) Handle(ctx context.Context, record slog.Record) error {
+	resolved := slog.NewRecord(record.Time, record.Level, record.Message, record.PC)
+	record.Attrs(func(attr slog.Attr) bool {
+		resolved.AddAttrs(resolveAttr(attr))
+		return true
+	})
 	var result error
 	for _, child := range handler {
 		if child.Enabled(ctx, record.Level) {
-			result = errors.Join(result, child.Handle(ctx, record.Clone()))
+			result = errors.Join(result, child.Handle(ctx, resolved.Clone()))
 		}
 	}
 	return result
 }
 
 func (handler fanoutHandler) WithAttrs(attributes []slog.Attr) slog.Handler {
+	resolved := make([]slog.Attr, len(attributes))
+	for index, attr := range attributes {
+		resolved[index] = resolveAttr(attr)
+	}
 	children := make(fanoutHandler, len(handler))
 	for index, child := range handler {
-		children[index] = child.WithAttrs(attributes)
+		// Each child owns its attribute slice and may retain or modify it.
+		children[index] = child.WithAttrs(slices.Clone(resolved))
 	}
 	return children
+}
+
+// Resolve once before fan-out, including group members, so both outputs agree.
+func resolveAttr(attr slog.Attr) slog.Attr {
+	attr.Value = attr.Value.Resolve()
+	if attr.Value.Kind() == slog.KindGroup {
+		members := attr.Value.Group()
+		resolved := make([]slog.Attr, len(members))
+		for index, member := range members {
+			resolved[index] = resolveAttr(member)
+		}
+		attr.Value = slog.GroupValue(resolved...)
+	}
+	return attr
 }
 
 func (handler fanoutHandler) WithGroup(name string) slog.Handler {
@@ -176,45 +239,4 @@ func (handler fanoutHandler) WithGroup(name string) slog.Handler {
 		children[index] = child.WithGroup(name)
 	}
 	return children
-}
-
-type colorWriter struct {
-	writer io.Writer
-}
-
-func (writer colorWriter) Write(payload []byte) (int, error) {
-	color := levelColor(payload)
-	if color == "" {
-		return writer.writer.Write(payload)
-	}
-	colored := make([]byte, 0, len(color)+len(payload)+len(ansiReset))
-	colored = append(colored, color...)
-	colored = append(colored, payload...)
-	colored = append(colored, ansiReset...)
-	written, err := writer.writer.Write(colored)
-	if written <= len(color) {
-		return 0, err
-	}
-	written -= len(color)
-	if written > len(payload) {
-		written = len(payload)
-	}
-	return written, err
-}
-
-const ansiReset = "\x1b[0m"
-
-func levelColor(payload []byte) string {
-	switch {
-	case bytes.Contains(payload, []byte(" level=DEBUG ")):
-		return "\x1b[36m"
-	case bytes.Contains(payload, []byte(" level=INFO ")):
-		return "\x1b[32m"
-	case bytes.Contains(payload, []byte(" level=WARN ")):
-		return "\x1b[33m"
-	case bytes.Contains(payload, []byte(" level=ERROR ")):
-		return "\x1b[31m"
-	default:
-		return ""
-	}
 }

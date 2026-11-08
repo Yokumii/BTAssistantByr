@@ -41,7 +41,7 @@ type Poller struct {
 	waitUntil          func(context.Context, time.Time) error
 }
 
-// SetLogger enables structured lifecycle logging. It must be called before Run.
+// SetLogger sets the logger used by Run; a nil logger disables logging.
 func (p *Poller) SetLogger(logger *slog.Logger) {
 	p.logger = logger
 }
@@ -111,6 +111,7 @@ func (p *Poller) Run(ctx context.Context, handler Handler) error {
 					}
 					p.logger.WarnContext(ctx, message,
 						"round", refreshRound,
+						"snapshot_valid", false,
 						"next_refresh_in", p.refreshInterval,
 						"error", err,
 					)
@@ -120,7 +121,7 @@ func (p *Poller) Run(ctx context.Context, handler Handler) error {
 			snapshot = append(snapshot[:0], candidates...)
 			snapshotValid = true
 			if p.logger != nil {
-				p.logger.InfoContext(ctx, "TopFree snapshot refreshed", "round", refreshRound, "candidates", len(snapshot), "duration", time.Since(started))
+				p.logger.DebugContext(ctx, "TopFree snapshot refreshed", "round", refreshRound, "candidates", len(snapshot), "duration", time.Since(started))
 			}
 			if err := p.handle(ctx, handler, snapshot, "tracker_refresh", refreshRound); err != nil {
 				return err
@@ -173,6 +174,12 @@ func (p *Poller) handle(ctx context.Context, handler Handler, snapshot []domain.
 	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr
+	}
+	if errors.Is(err, port.ErrInvalidTrackerSnapshot) {
+		if p.logger != nil {
+			p.logger.WarnContext(ctx, "TopFree queue cycle skipped because tracker metadata is invalid", "trigger", trigger, "round", round, "error", err, "next_queue_check_in", p.queueCheckInterval)
+		}
+		return nil
 	}
 	if errors.Is(err, ErrInsufficientDiskSpace) {
 		if p.logger != nil {

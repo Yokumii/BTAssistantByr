@@ -1,6 +1,10 @@
 package topfree
 
-import "github.com/Yokumii/BTAssistantByr/internal/domain"
+import (
+	"sort"
+
+	"github.com/Yokumii/BTAssistantByr/internal/domain"
+)
 
 // downloadQueue is reconciled from complete tracker and qBittorrent snapshots
 // every cycle. pending prevents duplicate adds before qBittorrent exposes a write.
@@ -13,6 +17,8 @@ type queueSnapshot struct {
 	candidates      []domain.Candidate
 	removed         []domain.TorrentHash
 	downloadBlocked bool
+	pendingHash     domain.TorrentHash
+	blocking        []domain.ManagedTorrent
 }
 
 func (q *downloadQueue) sync(currentCandidates, eligibleCandidates []domain.Candidate, managed []domain.ManagedTorrent) (queueSnapshot, error) {
@@ -62,6 +68,7 @@ func (q *downloadQueue) sync(currentCandidates, eligibleCandidates []domain.Cand
 
 	q.entries = make(map[domain.TorrentHash]domain.Candidate, len(eligible))
 	downloadBlocked := q.pending != ""
+	var blocking []domain.ManagedTorrent
 	for hash := range current {
 		if hash == q.pending {
 			continue
@@ -69,6 +76,7 @@ func (q *downloadQueue) sync(currentCandidates, eligibleCandidates []domain.Cand
 		if torrent, exists := managedByHash[hash]; exists {
 			if tagsInManagementScope(torrent.Tags) && isIncomplete(torrent) {
 				downloadBlocked = true
+				blocking = append(blocking, torrent)
 			}
 			continue
 		}
@@ -81,7 +89,8 @@ func (q *downloadQueue) sync(currentCandidates, eligibleCandidates []domain.Cand
 	for _, candidate := range q.entries {
 		queued = append(queued, candidate)
 	}
-	return queueSnapshot{candidates: queued, removed: removed, downloadBlocked: downloadBlocked}, nil
+	sort.Slice(blocking, func(i, j int) bool { return blocking[i].Hash < blocking[j].Hash })
+	return queueSnapshot{candidates: queued, removed: removed, downloadBlocked: downloadBlocked, pendingHash: q.pending, blocking: blocking}, nil
 }
 
 func (q *downloadQueue) markSubmitted(hash domain.TorrentHash) {

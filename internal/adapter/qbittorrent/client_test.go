@@ -23,16 +23,12 @@ const (
 	fixtureHashTwo = "89abcdef0123456789abcdef0123456789abcdef"
 )
 
-func TestClientListByTag(t *testing.T) {
+func TestClientListAllParsesTorrents(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodGet || request.URL.Path != "/webui/api/v2/torrents/info" {
-			http.Error(response, "unexpected endpoint", http.StatusNotFound)
-			return
-		}
-		if request.URL.Query().Get("tag") != "sc" {
-			http.Error(response, "unexpected tag", http.StatusBadRequest)
+		if request.Method != http.MethodGet || request.URL.Path != "/webui/api/v2/torrents/info" || request.URL.RawQuery != "" {
+			http.Error(response, "unexpected request", http.StatusBadRequest)
 			return
 		}
 		assertAuthenticatedRequest(t, request)
@@ -42,9 +38,9 @@ func TestClientListByTag(t *testing.T) {
 	defer server.Close()
 
 	client := newTestClient(t, server)
-	torrents, err := client.ListByTag(context.Background(), "sc")
+	torrents, err := client.ListAll(context.Background())
 	if err != nil {
-		t.Fatalf("ListByTag() error = %v", err)
+		t.Fatalf("ListAll() error = %v", err)
 	}
 	if len(torrents) != 1 {
 		t.Fatalf("len(torrents) = %d, want 1", len(torrents))
@@ -354,7 +350,6 @@ func TestClientValidatesMutationsBeforeRequest(t *testing.T) {
 		run     func() error
 		wantErr error
 	}{
-		{name: "empty list tag", run: func() error { _, err := client.ListByTag(context.Background(), " "); return err }, wantErr: ErrTagRequired},
 		{name: "missing hashes", run: func() error { return client.Reannounce(context.Background(), nil) }, wantErr: ErrHashesRequired},
 		{name: "unsafe hash", run: func() error { return client.Pause(context.Background(), []domain.TorrentHash{"all"}) }, wantErr: ErrInvalidTorrentHash},
 		{name: "missing tags", run: func() error { return client.AddTags(context.Background(), []domain.TorrentHash{fixtureHashOne}, nil) }, wantErr: ErrTagRequired},
@@ -366,7 +361,6 @@ func TestClientValidatesMutationsBeforeRequest(t *testing.T) {
 		}, wantErr: ErrInvalidSourceURL},
 	}
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			if err := test.run(); !errors.Is(err, test.wantErr) {
 				t.Errorf("error = %v, want %v", err, test.wantErr)
@@ -387,7 +381,7 @@ func TestClientReportsExpiredSession(t *testing.T) {
 	defer server.Close()
 	client := newTestClient(t, server)
 
-	_, err := client.ListByTag(context.Background(), "sc")
+	_, err := client.ListAll(context.Background())
 	if !errors.Is(err, ErrSessionExpired) {
 		t.Fatalf("error = %v, want ErrSessionExpired", err)
 	}
@@ -405,6 +399,9 @@ func TestClientMarksTemporaryServerFailureAsTransient(t *testing.T) {
 	if !errors.Is(err, ErrUnexpectedStatus) || !netretry.IsTransient(err) {
 		t.Fatalf("ListAll() error = %v, want transient ErrUnexpectedStatus", err)
 	}
+	if !strings.Contains(err.Error(), "qBittorrent GET /api/v2/torrents/info") || !strings.Contains(err.Error(), "503") {
+		t.Fatalf("error lacks endpoint or HTTP status: %v", err)
+	}
 }
 
 func TestClientRejectsInvalidListResponse(t *testing.T) {
@@ -416,9 +413,55 @@ func TestClientRejectsInvalidListResponse(t *testing.T) {
 	defer server.Close()
 	client := newTestClient(t, server)
 
-	_, err := client.ListByTag(context.Background(), "sc")
+	_, err := client.ListAll(context.Background())
 	if !errors.Is(err, ErrInvalidResponse) {
 		t.Fatalf("error = %v, want ErrInvalidResponse", err)
+	}
+	if !strings.Contains(err.Error(), "item_index=0 invalid field=hash") {
+		t.Fatalf("error lacks invalid record context: %v", err)
+	}
+}
+
+func TestRequestErrorsRedactRedirectCredentials(t *testing.T) {
+	t.Parallel()
+	for _, operation := range []string{"login", "list"} {
+		t.Run(operation, func(t *testing.T) {
+			httpClient := &http.Client{Transport: qbitRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+				if request.URL.Host == "qbit.test" {
+					return &http.Response{
+						StatusCode: http.StatusFound,
+						Header:     http.Header{"Location": {"https://private.test/download.php?passkey=private-passkey&auth_token=private-token#private-fragment"}},
+						Body:       io.NopCloser(strings.NewReader("")),
+						Request:    request,
+					}, nil
+				}
+				return nil, context.DeadlineExceeded
+			})}
+			authenticator, err := NewAuthenticator("https://qbit.test", httpClient)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if operation == "login" {
+				_, err = authenticator.Login(context.Background(), "fixture-user", "private-password")
+			} else {
+				client, createErr := authenticator.NewClient(Credential{CookieName: "SID", SID: "private-sid"})
+				if createErr != nil {
+					t.Fatal(createErr)
+				}
+				_, err = client.ListAll(context.Background())
+			}
+			if !errors.Is(err, context.DeadlineExceeded) || !netretry.IsTransient(err) {
+				t.Fatalf("transport cause lost: %v", err)
+			}
+			for _, secret := range []string{"private-passkey", "private-token", "private-fragment", "private-password", "private-sid"} {
+				if strings.Contains(err.Error(), secret) {
+					t.Errorf("error exposes %s: %v", secret, err)
+				}
+			}
+			if !strings.Contains(err.Error(), "private.test/download.php") {
+				t.Fatalf("error lost safe destination context: %v", err)
+			}
+		})
 	}
 }
 

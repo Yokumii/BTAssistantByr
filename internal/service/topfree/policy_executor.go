@@ -33,7 +33,7 @@ type PolicyExecutor struct {
 	logger   *slog.Logger
 }
 
-// SetLogger enables approval-policy logs. It must be called before Execute.
+// SetLogger sets the logger used by Execute; a nil logger disables logging.
 func (e *PolicyExecutor) SetLogger(logger *slog.Logger) {
 	e.logger = logger
 }

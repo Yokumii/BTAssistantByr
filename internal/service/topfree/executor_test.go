@@ -355,7 +355,6 @@ func TestExecutorRejectsUnsafePlanBeforePreflight(t *testing.T) {
 		{name: "invalid candidate", plan: Plan{Downloads: []DownloadPlan{{Candidate: domain.Candidate{}}}}},
 	}
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			source := &fakeDownloadSource{}

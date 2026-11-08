@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Yokumii/BTAssistantByr/internal/domain"
+	"github.com/Yokumii/BTAssistantByr/internal/netretry"
 	"github.com/Yokumii/BTAssistantByr/internal/port"
 )
 
@@ -50,16 +51,20 @@ type MutationClient interface {
 
 // Executor applies a previously computed Plan. It is not started automatically.
 type Executor struct {
-	source             DownloadURLSource
-	client             MutationClient
-	savePath           string
-	minFreeSpaceBytes  int64
-	logger             *slog.Logger
-	spaceCheckInterval time.Duration
-	spaceCheckAttempts int
+	now                 func() time.Time
+	source              DownloadURLSource
+	client              MutationClient
+	savePath            string
+	minFreeSpaceBytes   int64
+	logger              *slog.Logger
+	notifier            port.Notifier
+	notificationBonus   port.BonusTracker
+	notificationTimeout time.Duration
+	spaceCheckInterval  time.Duration
+	spaceCheckAttempts  int
 }
 
-// SetLogger enables detailed execution logs. It must be called before Execute.
+// SetLogger sets the logger used by Execute; a nil logger disables logging.
 func (e *Executor) SetLogger(logger *slog.Logger) {
 	e.logger = logger
 }
@@ -76,6 +81,7 @@ func NewExecutor(source DownloadURLSource, client MutationClient, savePath strin
 		return nil, ErrInvalidFreeSpaceReserve
 	}
 	return &Executor{
+		now:                time.Now,
 		source:             source,
 		client:             client,
 		savePath:           strings.TrimSpace(savePath),
@@ -87,12 +93,31 @@ func NewExecutor(source DownloadURLSource, client MutationClient, savePath strin
 
 // Execute validates and preflights the complete plan before applying writes in order.
 // It stops on the first error; already completed external writes are not rolled back.
-func (e *Executor) Execute(ctx context.Context, plan Plan) error {
+func (e *Executor) Execute(ctx context.Context, plan Plan) (resultErr error) {
+	progress := executionProgress{phase: "validate_plan", started: e.now()}
+	defer func() { e.notifyExecution(ctx, plan, &progress, resultErr) }()
+	defer func() {
+		if resultErr == nil || e.logger == nil {
+			return
+		}
+		level := slog.LevelError
+		if ctx.Err() != nil || netretry.IsTransient(resultErr) || errors.Is(resultErr, port.ErrInvalidTrackerSnapshot) || errors.Is(resultErr, ErrInsufficientDiskSpace) {
+			level = slog.LevelWarn
+		}
+		e.logger.Log(ctx, level, "TopFree execution stopped",
+			"phase", progress.phase, "confirmed_write_requests", progress.confirmedWrites,
+			"error", resultErr,
+		)
+	}()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	prepared, err := prepareExecutionPlan(plan)
 	if err != nil {
+		return err
+	}
+	progress.phase = "check_freshness_before_preflight"
+	if err := e.verifyBonusFreshness(plan); err != nil {
 		return err
 	}
 	if e.logger != nil {
@@ -108,43 +133,93 @@ func (e *Executor) Execute(ctx context.Context, plan Plan) error {
 			"downloads", len(prepared.downloads),
 		)
 	}
+	progress.phase = "preflight_downloads"
 	if err := e.preflightDownloads(ctx, prepared.downloads); err != nil {
 		return err
 	}
-	if err := e.verifyDiskSpaceBeforeWrites(ctx, prepared); err != nil {
+	progress.phase = "check_space_before_writes"
+	if err := e.verifyDiskSpaceBeforeWrites(ctx, prepared, &progress); err != nil {
 		return err
 	}
-	if err := e.removeExpiredDownloads(ctx, prepared.removeExpired); err != nil {
+	if e.notifier != nil && planHasWrites(plan) {
+		e.observeBeforeWrites(ctx, &progress)
+	}
+	progress.phase = "check_freshness_before_writes"
+	if err := e.verifyBonusFreshness(plan); err != nil {
+		return err
+	}
+	progress.phase = "remove_expired_downloads"
+	if err := e.removeExpiredDownloads(ctx, prepared.removeExpired, &progress); err != nil {
 		return err
 	}
 
-	if err := e.addTags(ctx, prepared.tagAsManaged, ManagedTag, "tag current TopFree torrents as managed"); err != nil {
+	progress.phase = "tag_as_managed"
+	if err := e.addTags(ctx, prepared.tagAsManaged, ManagedTag, "tag current TopFree torrents as managed", &progress); err != nil {
 		return err
 	}
-	if err := e.removeTags(ctx, prepared.unmarkForDeletion, DeleteTag, "unmark current TopFree torrents for deletion"); err != nil {
+	progress.phase = "unmark_for_deletion"
+	if err := e.removeTags(ctx, prepared.unmarkForDeletion, DeleteTag, "unmark current TopFree torrents for deletion", &progress); err != nil {
 		return err
 	}
-	if err := e.addTags(ctx, prepared.markForDeletion, DeleteTag, "mark stale TopFree torrents for deletion"); err != nil {
+	progress.phase = "mark_for_deletion"
+	if err := e.addTags(ctx, prepared.markForDeletion, DeleteTag, "mark stale TopFree torrents for deletion", &progress); err != nil {
 		return err
 	}
 
-	if err := e.cleanupDownloads(ctx, prepared.downloads); err != nil {
+	progress.phase = "check_freshness_before_cleanup"
+	if err := e.verifyBonusFreshness(plan); err != nil {
 		return err
 	}
-	if err := e.verifyDiskSpaceAfterCleanup(ctx, prepared); err != nil {
+	progress.phase = "cleanup_downloads"
+	if err := e.cleanupDownloads(ctx, prepared.downloads, &progress); err != nil {
 		return err
 	}
+	progress.phase = "check_space_after_cleanup"
+	if err := e.verifyDiskSpaceAfterCleanup(ctx, prepared, &progress); err != nil {
+		return err
+	}
+	progress.phase = "check_freshness_before_add"
+	if err := e.verifyBonusFreshness(plan); err != nil {
+		return err
+	}
+	progress.phase = "add_downloads"
 	for _, download := range prepared.downloads {
-		if err := e.addDownload(ctx, download); err != nil {
+		if err := e.addDownload(ctx, download, &progress); err != nil {
 			return err
 		}
 	}
+	progress.phase = "completed"
 	if e.logger != nil {
 		level := slog.LevelDebug
 		if len(prepared.tagAsManaged)+len(prepared.unmarkForDeletion)+len(prepared.markForDeletion)+len(prepared.removeExpired)+len(prepared.downloads) > 0 {
 			level = slog.LevelInfo
 		}
-		e.logger.Log(ctx, level, "TopFree execution plan completed")
+		e.logger.Log(ctx, level, "TopFree execution plan completed", "confirmed_write_requests", progress.confirmedWrites)
+	}
+	return nil
+}
+
+type executionProgress struct {
+	phase           string
+	confirmedWrites int
+	started         time.Time
+	actions         []writeAction
+	before          notificationSnapshot
+	afterCleanup    *domain.DiskSpace
+}
+
+func (e *Executor) verifyBonusFreshness(plan Plan) error {
+	if plan.Bonus == nil {
+		return nil
+	}
+	now := e.now()
+	if plan.Bonus.ObservedAt.IsZero() || !plan.Bonus.ValidUntil.After(plan.Bonus.ObservedAt) || now.Before(plan.Bonus.ObservedAt) || !now.Before(plan.Bonus.ValidUntil) {
+		return fmt.Errorf("%w: bonus plan expired; observed_at=%s valid_until=%s now=%s; rebuild before further writes", port.ErrInvalidTrackerSnapshot, plan.Bonus.ObservedAt.Format(time.RFC3339), plan.Bonus.ValidUntil.Format(time.RFC3339), now.Format(time.RFC3339))
+	}
+	for _, download := range plan.Downloads {
+		if !download.Candidate.FreeUntil.After(now) {
+			return fmt.Errorf("%w: bonus candidate free period expired; torrent_id=%s hash=%s free_until=%s now=%s", port.ErrInvalidTrackerSnapshot, download.Candidate.ID, download.Candidate.Hash, download.Candidate.FreeUntil.Format(time.RFC3339), now.Format(time.RFC3339))
+		}
 	}
 	return nil
 }
@@ -189,15 +264,15 @@ func prepareExecutionPlan(plan Plan) (*preparedExecutionPlan, error) {
 	}
 	normalizedCandidates, err := normalizeCandidates(candidates)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidPlan, err)
+		return nil, fmt.Errorf("%w: %w", ErrInvalidPlan, err)
 	}
 	normalizedDeletions, err := normalizeManaged(deletions)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidPlan, err)
+		return nil, fmt.Errorf("%w: %w", ErrInvalidPlan, err)
 	}
 	normalizedExpired, err := normalizeManaged(plan.RemoveExpired)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidPlan, err)
+		return nil, fmt.Errorf("%w: %w", ErrInvalidPlan, err)
 	}
 	for _, torrent := range normalizedExpired {
 		if !isIncomplete(torrent) {
@@ -309,7 +384,7 @@ func (e *Executor) preflightDownloads(ctx context.Context, downloads []preparedD
 	return nil
 }
 
-func (e *Executor) addTags(ctx context.Context, hashes []domain.TorrentHash, tag, operation string) error {
+func (e *Executor) addTags(ctx context.Context, hashes []domain.TorrentHash, tag, operation string, progress *executionProgress) error {
 	if len(hashes) == 0 {
 		return nil
 	}
@@ -319,13 +394,16 @@ func (e *Executor) addTags(ctx context.Context, hashes []domain.TorrentHash, tag
 	if e.logger != nil {
 		e.logger.DebugContext(ctx, operation, "hashes", hashes, "tag", tag)
 	}
-	if err := e.client.AddTags(ctx, hashes, []string{tag}); err != nil {
+	if err := progress.write("add_tags:"+tag, hashes, func() error { return e.client.AddTags(ctx, hashes, []string{tag}) }); err != nil {
 		return fmt.Errorf("%s: %w", operation, err)
+	}
+	if e.logger != nil {
+		e.logger.InfoContext(ctx, "qBittorrent tags added", "hashes", hashes, "tag", tag)
 	}
 	return nil
 }
 
-func (e *Executor) removeTags(ctx context.Context, hashes []domain.TorrentHash, tag, operation string) error {
+func (e *Executor) removeTags(ctx context.Context, hashes []domain.TorrentHash, tag, operation string, progress *executionProgress) error {
 	if len(hashes) == 0 {
 		return nil
 	}
@@ -335,13 +413,16 @@ func (e *Executor) removeTags(ctx context.Context, hashes []domain.TorrentHash, 
 	if e.logger != nil {
 		e.logger.DebugContext(ctx, operation, "hashes", hashes, "tag", tag)
 	}
-	if err := e.client.RemoveTags(ctx, hashes, []string{tag}); err != nil {
+	if err := progress.write("remove_tags:"+tag, hashes, func() error { return e.client.RemoveTags(ctx, hashes, []string{tag}) }); err != nil {
 		return fmt.Errorf("%s: %w", operation, err)
+	}
+	if e.logger != nil {
+		e.logger.InfoContext(ctx, "qBittorrent tags removed", "hashes", hashes, "tag", tag)
 	}
 	return nil
 }
 
-func (e *Executor) verifyDiskSpaceBeforeWrites(ctx context.Context, plan *preparedExecutionPlan) error {
+func (e *Executor) verifyDiskSpaceBeforeWrites(ctx context.Context, plan *preparedExecutionPlan, progress *executionProgress) error {
 	if len(plan.downloads) == 0 {
 		return nil
 	}
@@ -352,6 +433,7 @@ func (e *Executor) verifyDiskSpaceBeforeWrites(ctx context.Context, plan *prepar
 	if err := validateDiskSpace(space); err != nil {
 		return err
 	}
+	progress.before.space = &space
 	if planSpacePath := strings.TrimSpace(plan.effectiveSavePath); planSpacePath != "" && !sameDiskPath(planSpacePath, space.Path) {
 		return fmt.Errorf("%w: planned save path %q changed to %q", ErrInvalidPlan, planSpacePath, space.Path)
 	}
@@ -390,7 +472,7 @@ func (e *Executor) verifyDiskSpaceBeforeWrites(ctx context.Context, plan *prepar
 	return nil
 }
 
-func (e *Executor) removeExpiredDownloads(ctx context.Context, torrents []domain.ManagedTorrent) error {
+func (e *Executor) removeExpiredDownloads(ctx context.Context, torrents []domain.ManagedTorrent, progress *executionProgress) error {
 	if len(torrents) == 0 {
 		return nil
 	}
@@ -404,8 +486,11 @@ func (e *Executor) removeExpiredDownloads(ctx context.Context, torrents []domain
 	if e.logger != nil {
 		e.logger.WarnContext(ctx, "stopping downloads no longer TopFree", "hashes", hashes)
 	}
-	if err := e.client.Pause(ctx, hashes); err != nil {
+	if err := progress.write("pause", hashes, func() error { return e.client.Pause(ctx, hashes) }); err != nil {
 		return fmt.Errorf("stop downloads no longer TopFree: %w", err)
+	}
+	if e.logger != nil {
+		e.logger.InfoContext(ctx, "stopped downloads no longer TopFree", "hashes", hashes)
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -413,13 +498,16 @@ func (e *Executor) removeExpiredDownloads(ctx context.Context, torrents []domain
 	if e.logger != nil {
 		e.logger.WarnContext(ctx, "deleting downloads no longer TopFree", "hashes", hashes, "delete_files", true)
 	}
-	if err := e.client.Delete(ctx, hashes, true); err != nil {
+	if err := progress.write("delete_with_files", hashes, func() error { return e.client.Delete(ctx, hashes, true) }); err != nil {
 		return fmt.Errorf("delete downloads no longer TopFree: %w", err)
+	}
+	if e.logger != nil {
+		e.logger.InfoContext(ctx, "deleted downloads no longer TopFree", "hashes", hashes, "delete_files", true)
 	}
 	return nil
 }
 
-func (e *Executor) cleanupDownloads(ctx context.Context, downloads []preparedDownload) error {
+func (e *Executor) cleanupDownloads(ctx context.Context, downloads []preparedDownload, progress *executionProgress) error {
 	var hashes []domain.TorrentHash
 	for _, download := range downloads {
 		for _, torrent := range download.deleteBefore {
@@ -433,8 +521,11 @@ func (e *Executor) cleanupDownloads(ctx context.Context, downloads []preparedDow
 		if e.logger != nil {
 			e.logger.DebugContext(ctx, "reannouncing cleanup torrents", "hashes", hashes)
 		}
-		if err := e.client.Reannounce(ctx, hashes); err != nil {
+		if err := progress.write("reannounce", hashes, func() error { return e.client.Reannounce(ctx, hashes) }); err != nil {
 			return fmt.Errorf("reannounce cleanup torrents: %w", err)
+		}
+		if e.logger != nil {
+			e.logger.DebugContext(ctx, "reannounced cleanup torrents", "hashes", hashes)
 		}
 		if err := ctx.Err(); err != nil {
 			return err
@@ -442,8 +533,11 @@ func (e *Executor) cleanupDownloads(ctx context.Context, downloads []preparedDow
 		if e.logger != nil {
 			e.logger.DebugContext(ctx, "stopping cleanup torrents", "hashes", hashes)
 		}
-		if err := e.client.Pause(ctx, hashes); err != nil {
+		if err := progress.write("pause", hashes, func() error { return e.client.Pause(ctx, hashes) }); err != nil {
 			return fmt.Errorf("stop cleanup torrents: %w", err)
+		}
+		if e.logger != nil {
+			e.logger.InfoContext(ctx, "stopped cleanup torrents", "hashes", hashes)
 		}
 		if err := ctx.Err(); err != nil {
 			return err
@@ -451,14 +545,17 @@ func (e *Executor) cleanupDownloads(ctx context.Context, downloads []preparedDow
 		if e.logger != nil {
 			e.logger.DebugContext(ctx, "deleting cleanup torrents", "hashes", hashes, "delete_files", true)
 		}
-		if err := e.client.Delete(ctx, hashes, true); err != nil {
+		if err := progress.write("delete_with_files", hashes, func() error { return e.client.Delete(ctx, hashes, true) }); err != nil {
 			return fmt.Errorf("delete cleanup torrents: %w", err)
+		}
+		if e.logger != nil {
+			e.logger.InfoContext(ctx, "deleted cleanup torrents", "hashes", hashes, "delete_files", true)
 		}
 	}
 	return nil
 }
 
-func (e *Executor) verifyDiskSpaceAfterCleanup(ctx context.Context, plan *preparedExecutionPlan) error {
+func (e *Executor) verifyDiskSpaceAfterCleanup(ctx context.Context, plan *preparedExecutionPlan, progress *executionProgress) error {
 	if len(plan.downloads) == 0 {
 		return nil
 	}
@@ -475,6 +572,7 @@ func (e *Executor) verifyDiskSpaceAfterCleanup(ctx context.Context, plan *prepar
 		if err := validateDiskSpace(space); err != nil {
 			return err
 		}
+		progress.afterCleanup = &space
 		if planSpacePath := strings.TrimSpace(plan.effectiveSavePath); planSpacePath != "" && !sameDiskPath(planSpacePath, space.Path) {
 			return fmt.Errorf("%w: save path changed from %q to %q after cleanup", ErrInvalidPlan, planSpacePath, space.Path)
 		}
@@ -561,19 +659,24 @@ func waitForSpaceCheck(ctx context.Context, interval time.Duration) error {
 	}
 }
 
-func (e *Executor) addDownload(ctx context.Context, download preparedDownload) error {
+func (e *Executor) addDownload(ctx context.Context, download preparedDownload, progress *executionProgress) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if e.logger != nil {
 		e.logger.DebugContext(ctx, "adding TopFree torrent", "torrent_id", download.candidate.ID, "name", download.candidate.Name, "save_path", e.savePath, "tag", ManagedTag)
 	}
-	if err := e.client.Add(ctx, port.AddTorrentRequest{
-		SourceURL: download.sourceURL,
-		SavePath:  e.savePath,
-		Tags:      []string{ManagedTag},
+	if err := progress.write("add", []domain.TorrentHash{download.candidate.Hash}, func() error {
+		return e.client.Add(ctx, port.AddTorrentRequest{
+			SourceURL: download.sourceURL,
+			SavePath:  e.savePath,
+			Tags:      []string{ManagedTag},
+		})
 	}); err != nil {
 		return fmt.Errorf("add TopFree torrent %s: %w", download.candidate.ID, err)
+	}
+	if e.logger != nil {
+		e.logger.InfoContext(ctx, "TopFree torrent added", "torrent_id", download.candidate.ID, "name", download.candidate.Name, "save_path", e.savePath, "tag", ManagedTag)
 	}
 	return nil
 }

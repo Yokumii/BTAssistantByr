@@ -133,7 +133,7 @@ func TestBuildPlanKeepsAuthorizedToDelTorrentWhenCapacityAlreadyFits(t *testing.
 	}
 }
 
-func TestBuildPlanMatchesLegacyReverseRollbackSelection(t *testing.T) {
+func TestBuildPlanMatchesReverseRollbackSelection(t *testing.T) {
 	t.Parallel()
 
 	stale := []domain.ManagedTorrent{
@@ -150,7 +150,7 @@ func TestBuildPlanMatchesLegacyReverseRollbackSelection(t *testing.T) {
 	}
 	deletions := plan.Downloads[0].DeleteBefore
 	if len(deletions) != 2 || deletions[0].Hash != torrentHash(4) || deletions[1].Hash != torrentHash(6) {
-		t.Fatalf("DeleteBefore = %+v, want legacy rollback selection [1, 7]", deletions)
+		t.Fatalf("DeleteBefore = %+v, want default rollback selection [1, 7]", deletions)
 	}
 }
 
@@ -516,7 +516,6 @@ func TestBuildPlanValidatesInput(t *testing.T) {
 		{name: "disk usage overflow", limit: 100, candidates: nil, managed: []domain.ManagedTorrent{managedTorrent(8, math.MaxInt64, 1, ManagedTag), managedTorrent(9, 1, 2, ManagedTag)}, wantErr: ErrDiskUsageOverflow},
 	}
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			_, err := BuildPlan(test.limit, test.candidates, test.managed)

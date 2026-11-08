@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/Yokumii/BTAssistantByr/internal/netretry"
@@ -55,9 +56,6 @@ func TestAuthenticatorLogin(t *testing.T) {
 	credential, err := authenticator.Login(context.Background(), "alice", "secret")
 	if err != nil {
 		t.Fatalf("login: %v", err)
-	}
-	if credential.AccessToken != "api-token" {
-		t.Fatalf("unexpected access token: %q", credential.AccessToken)
 	}
 	if credential.AuthToken != "cookie-token" {
 		t.Fatalf("unexpected auth token: %q", credential.AuthToken)
@@ -129,7 +127,7 @@ func TestAuthenticatorLoginRejectsMissingInput(t *testing.T) {
 	}
 }
 
-func TestAuthenticatorLoginRejectsResponseWithoutToken(t *testing.T) {
+func TestAuthenticatorLoginUsesCookieCredentialsWithoutAPIToken(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
@@ -145,9 +143,12 @@ func TestAuthenticatorLoginRejectsResponseWithoutToken(t *testing.T) {
 		t.Fatalf("create authenticator: %v", err)
 	}
 
-	_, err = authenticator.Login(context.Background(), "alice", "wrong-password")
-	if !errors.Is(err, ErrAuthenticationFailed) {
-		t.Fatalf("unexpected error: got %v, want %v", err, ErrAuthenticationFailed)
+	credential, err := authenticator.Login(context.Background(), "alice", "secret")
+	if err != nil {
+		t.Fatalf("Login() error = %v", err)
+	}
+	if credential.AuthToken != "cookie-token" || credential.SessionID != "session-token" {
+		t.Fatalf("unexpected credential: %+v", credential)
 	}
 }
 
@@ -232,6 +233,9 @@ func TestAuthenticatorLoginRejectsUnexpectedStatus(t *testing.T) {
 	}
 	if !netretry.IsTransient(err) {
 		t.Fatalf("503 error was not marked transient: %v", err)
+	}
+	if !strings.Contains(err.Error(), "BYR POST /api/v2/login.php") || !strings.Contains(err.Error(), "503") {
+		t.Fatalf("error lacks endpoint or HTTP status: %v", err)
 	}
 }
 

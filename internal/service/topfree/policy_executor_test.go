@@ -45,7 +45,6 @@ func TestPolicyExecutorRequiresApprovalBeforeWrites(t *testing.T) {
 		{name: "declined", approved: false, wantErr: ErrExecutionDeclined},
 	}
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			delegate := &recordingExecutor{}

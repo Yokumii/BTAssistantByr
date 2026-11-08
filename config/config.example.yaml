@@ -12,6 +12,8 @@ client:
   save_path: ""
 
 strategy:
+  # 可选：free_time（默认）或 bonus（按预计魔力净收益优先）。
+  priority: "free_time"
   max_disk_usage_gib: 500
   # max_torrent_size_gib: 100
   min_free_space_gib: 10
@@ -21,9 +23,21 @@ strategy:
 execution:
   mode: "request_approval"
 
+# 可选：省略整个 resend 块即关闭邮件；启用时以下字段均必填。
+# 发件地址须使用已在 Resend 验证的域名。
+# resend:
+#   api_key: "re_your_api_key"
+#   from: "BTAssistantByr <bt@example.com>"
+#   to:
+#     - "you@example.com"
+#   timeout: "15s"
+
 runtime:
   data_dir: "data"
   log_dir: "logs"
   log_level: "info"
   log_color: "auto"
+  # 可选：省略时单文件上限 20 MiB，保留 5 份备份。
+  log_max_size_mib: 20
+  log_max_backups: 5
   network_retry_count: 3

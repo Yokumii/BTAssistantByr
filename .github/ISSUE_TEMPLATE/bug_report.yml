@@ -5,9 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        感谢反馈。提交前请先搜索已有 Issue，并确认问题在最新版本中仍然存在。
-
-        请勿提交 BYR/qBittorrent 的用户名、密码、Cookie、SID、passkey、私有下载链接或其他敏感信息。
+        提交前请先搜索已有 Issue，并移除 BYR/qBittorrent 的用户名、密码、Cookie、SID、passkey、私有下载链接等敏感信息。
 
   - type: checkboxes
     id: preflight
@@ -93,14 +91,14 @@ body:
     id: logs
     attributes:
       label: 相关日志
-      description: 建议使用 debug 日志；提交前务必移除凭证、Cookie、SID、passkey 和私有 URL。
+      description: 建议使用 debug 日志。
       render: shell
 
   - type: textarea
     id: config
     attributes:
       label: 相关配置
-      description: 仅粘贴与问题有关且已经脱敏的配置；不需要时可留空。
+      description: 仅粘贴与问题有关的配置；不需要时可留空。
       render: yaml
 
   - type: textarea

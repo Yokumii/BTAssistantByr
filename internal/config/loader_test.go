@@ -60,7 +60,7 @@ func TestLoad(t *testing.T) {
 	if configuration.Client.BaseURL != "http://127.0.0.1:8080/webui/" || configuration.Client.Username != "qbt-user" || configuration.Client.Password != " client password " || configuration.Client.SavePath != "/downloads" {
 		t.Errorf("unexpected client configuration")
 	}
-	if configuration.Strategy.MaxDiskUsageBytes != 500*(1<<30) || configuration.Strategy.MaxTorrentSizeBytes != 100*(1<<30) || configuration.Strategy.MinFreeSpaceBytes != 10*(1<<30) || configuration.Strategy.RefreshInterval != 121*time.Second || configuration.Strategy.QueueCheckInterval != 10*time.Second {
+	if configuration.Strategy.Priority != "free_time" || configuration.Strategy.MaxDiskUsageBytes != 500*(1<<30) || configuration.Strategy.MaxTorrentSizeBytes != 100*(1<<30) || configuration.Strategy.MinFreeSpaceBytes != 10*(1<<30) || configuration.Strategy.RefreshInterval != 121*time.Second || configuration.Strategy.QueueCheckInterval != 10*time.Second {
 		t.Errorf("unexpected strategy configuration: %+v", configuration.Strategy)
 	}
 	if configuration.Execution.Mode != domain.ExecutionModeRequestApproval {
@@ -68,6 +68,55 @@ func TestLoad(t *testing.T) {
 	}
 	if configuration.Runtime.DataDir != "data" || configuration.Runtime.LogDir != "logs" || configuration.Runtime.LogLevel != "debug" || configuration.Runtime.LogColor != "auto" || configuration.Runtime.NetworkRetryCount != 3 {
 		t.Errorf("unexpected runtime configuration: %+v", configuration.Runtime)
+	}
+	if configuration.Runtime.LogMaxSizeBytes != 20*mib || configuration.Runtime.LogMaxBackups != 5 {
+		t.Errorf("unexpected default log rotation: %+v", configuration.Runtime)
+	}
+	if configuration.Resend != nil {
+		t.Error("notifications must be disabled when resend is omitted")
+	}
+}
+
+func TestLoadResend(t *testing.T) {
+	t.Parallel()
+	const resendYAML = `
+resend:
+  api_key: " re_test_secret "
+  from: " BTAssistantByr <bt@example.com> "
+  to: [" you@example.com ", "second@example.com"]
+  timeout: "15s"
+`
+	configuration, err := Load(writeConfig(t, validYAML+resendYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := configuration.Resend
+	if got == nil || got.APIKey != "re_test_secret" || got.From != "BTAssistantByr <bt@example.com>" || len(got.To) != 2 || got.To[0] != "you@example.com" || got.Timeout != 15*time.Second {
+		t.Fatal("unexpected Resend configuration")
+	}
+	for _, test := range []struct{ name, content string }{
+		{"empty block", "\nresend: {}\n"},
+		{"missing key", strings.Replace(resendYAML, `api_key: " re_test_secret "`, `api_key: ""`, 1)},
+		{"key newline", strings.Replace(resendYAML, `api_key: " re_test_secret "`, `api_key: "re_test_secret\ninvalid"`, 1)},
+		{"invalid sender", strings.Replace(resendYAML, `BTAssistantByr <bt@example.com>`, "invalid", 1)},
+		{"no recipients", strings.Replace(resendYAML, `[" you@example.com ", "second@example.com"]`, "[]", 1)},
+		{"recipient display name", strings.Replace(resendYAML, "second@example.com", "Name <second@example.com>", 1)},
+		{"invalid recipient", strings.Replace(resendYAML, "second@example.com", "invalid", 1)},
+		{"too many recipients", strings.Replace(resendYAML, `[" you@example.com ", "second@example.com"]`, "["+strings.Repeat("you@example.com,", 50)+"you@example.com]", 1)},
+		{"missing timeout", strings.Replace(resendYAML, `  timeout: "15s"`, "", 1)},
+		{"zero timeout", strings.Replace(resendYAML, "15s", "0s", 1)},
+		{"invalid timeout", strings.Replace(resendYAML, "15s", "later", 1)},
+		{"unknown field", resendYAML + "  unexpected: true\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := Load(writeConfig(t, validYAML+test.content))
+			if !errors.Is(err, ErrInvalidConfig) {
+				t.Fatalf("Load() error = %v, want invalid configuration", err)
+			}
+			if strings.Contains(err.Error(), "re_test_secret") {
+				t.Fatal("configuration error leaked API key")
+			}
+		})
 	}
 }
 
@@ -79,6 +128,8 @@ func TestLoadRejectsInvalidConfiguration(t *testing.T) {
 		content string
 	}{
 		{name: "unknown field", content: strings.Replace(validYAML, "  cookie:", "  unexpected: true\n  cookie:", 1)},
+		{name: "invalid priority", content: strings.Replace(validYAML, "strategy:\n", "strategy:\n  priority: unknown\n", 1)},
+		{name: "blank priority", content: strings.Replace(validYAML, "strategy:\n", "strategy:\n  priority: \"\"\n", 1)},
 		{name: "invalid YAML", content: "tracker: ["},
 		{name: "multiple documents", content: validYAML + "---\ntracker: {}\n"},
 		{name: "missing tracker username", content: strings.Replace(validYAML, `username: " byr-user "`, `username: ""`, 1)},
@@ -110,12 +161,18 @@ func TestLoadRejectsInvalidConfiguration(t *testing.T) {
 		{name: "invalid log level", content: strings.Replace(validYAML, `log_level: " DEBUG "`, `log_level: "trace"`, 1)},
 		{name: "missing log color", content: strings.Replace(validYAML, `log_color: " AUTO "`, `log_color: ""`, 1)},
 		{name: "invalid log color", content: strings.Replace(validYAML, `log_color: " AUTO "`, `log_color: "rainbow"`, 1)},
+		{name: "zero log size", content: validYAML + "  log_max_size_mib: 0\n"},
+		{name: "negative log size", content: validYAML + "  log_max_size_mib: -1\n"},
+		{name: "log size overflow", content: validYAML + "  log_max_size_mib: 8796093022208\n"},
+		{name: "fractional log size", content: validYAML + "  log_max_size_mib: 0.5\n"},
+		{name: "zero log backups", content: validYAML + "  log_max_backups: 0\n"},
+		{name: "negative log backups", content: validYAML + "  log_max_backups: -1\n"},
+		{name: "excessive log backups", content: validYAML + "  log_max_backups: 101\n"},
 		{name: "missing network retry count", content: strings.Replace(validYAML, "  network_retry_count: 3\n", "", 1)},
 		{name: "negative network retry count", content: strings.Replace(validYAML, "network_retry_count: 3", "network_retry_count: -1", 1)},
 		{name: "excessive network retry count", content: strings.Replace(validYAML, "network_retry_count: 3", "network_retry_count: 101", 1)},
 	}
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			_, err := Load(writeConfig(t, test.content))
@@ -136,6 +193,42 @@ func TestLoadAcceptsYOLOExecutionMode(t *testing.T) {
 	}
 	if configuration.Execution.Mode != domain.ExecutionModeYOLO {
 		t.Errorf("execution mode = %q, want %q", configuration.Execution.Mode, domain.ExecutionModeYOLO)
+	}
+}
+
+func TestLoadLogRotation(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		content string
+		size    int64
+		backups int
+	}{
+		{name: "custom", content: "  log_max_size_mib: 8\n  log_max_backups: 3\n", size: 8 * mib, backups: 3},
+		{name: "size only", content: "  log_max_size_mib: 1\n", size: mib, backups: 5},
+		{name: "backups only", content: "  log_max_backups: 1\n", size: 20 * mib, backups: 1},
+		{name: "upper boundaries", content: "  log_max_size_mib: " + strconv.FormatInt(math.MaxInt64/mib, 10) + "\n  log_max_backups: 100\n", size: (math.MaxInt64 / mib) * mib, backups: 100},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			configuration, err := Load(writeConfig(t, validYAML+test.content))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if configuration.Runtime.LogMaxSizeBytes != test.size || configuration.Runtime.LogMaxBackups != test.backups {
+				t.Fatalf("unexpected log rotation: %+v", configuration.Runtime)
+			}
+		})
+	}
+}
+
+func TestLoadBonusPriority(t *testing.T) {
+	t.Parallel()
+	configuration, err := Load(writeConfig(t, strings.Replace(validYAML, "strategy:\n", "strategy:\n  priority: \" BONUS \"\n", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configuration.Strategy.Priority != "bonus" {
+		t.Fatalf("priority = %q", configuration.Strategy.Priority)
 	}
 }
 
@@ -163,8 +256,8 @@ func TestLoadRejectsMissingPath(t *testing.T) {
 	if _, err := Load(" "); !errors.Is(err, ErrPathRequired) {
 		t.Fatalf("Load() error = %v, want ErrPathRequired", err)
 	}
-	if _, err := Load(filepath.Join(t.TempDir(), "missing.yaml")); !errors.Is(err, ErrReadConfig) {
-		t.Fatalf("Load() error = %v, want ErrReadConfig", err)
+	if _, err := Load(filepath.Join(t.TempDir(), "missing.yaml")); !errors.Is(err, ErrReadConfig) || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Load() error = %v, want ErrReadConfig and os.ErrNotExist", err)
 	}
 }
 
